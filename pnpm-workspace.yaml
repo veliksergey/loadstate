@@ -1,0 +1,7 @@
+packages:
+  - packages/*
+
+# both scripts only fetch binaries that their platform packages already ship
+allowBuilds:
+  esbuild: false
+  workerd: false

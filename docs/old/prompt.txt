@@ -1,0 +1,24 @@
+I want to add another project for my GitHub portfolio. Help me to write a plan for the project (in md format).
+
+Idea: an API for front-end developers to use during developing to test their: fetch implementations, UI components, suspend/lazy loading.
+
+Requirements:
+- write the code like it was written by me/human, use only super short comments as possible
+- api needs to cover basic needs of front-end developers, have options to provide lists and single records of different items such as: users, articles, customers, books, etc (whatever is popular)
+- support of basic api methods such as get/post/pull/delete, others if needed
+- both basic and cursor pagination support
+- both graphql and rest support (user can choose)
+- json output
+- option to slowdown (timeout) api response to test loading state and everything that related to loading
+- image placeholders with different size options (ideally dynamic sizes based on user request)
+
+my plans:
+- to get a domain and host it for public use (but don't want to pay a lot for domain and hosting)
+- for developer to be able to clone the repo and run it locally on their computer or host it themselves somewhere else
+
+
+Questions:
+- is database required for this project?
+- any other output should be supported besides json?
+
+Do a research for existing projects/websites/apis like that and tell me what I am missing (from popular options). Provide suggestions how to make it better and easier for developers to use. Ask me questions for clarifications if any are needed.

@@ -1,0 +1,4 @@
+name = "loadstate"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+send_metrics = false

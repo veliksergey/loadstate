@@ -1,0 +1,39 @@
+{
+  "name": "@loadstate/msw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@loadstate/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/clean.mjs dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@loadstate/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "msw": "^3.0.3"
+  },
+  "devDependencies": {
+    "@loadstate/server": "workspace:*",
+    "msw": "3.0.3",
+    "vite": "8.3.4"
+  }
+}

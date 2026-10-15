@@ -1,0 +1,39 @@
+{
+  "name": "@loadstate/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@loadstate/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "scripts": {
+    "build": "node ../../scripts/clean.mjs dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev:worker": "wrangler dev",
+    "smoke:worker": "node scripts/smoke-worker.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "2.1.5",
+    "@loadstate/core": "workspace:*",
+    "hono": "4.13.13"
+  },
+  "devDependencies": {
+    "wrangler": "4.151.0"
+  }
+}
