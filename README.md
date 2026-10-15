@@ -2,7 +2,9 @@
 
 A fake REST API and scenario toolkit for building and testing front-end loading, error and data states.
 
-**Status: pre-release, milestone M0.** Today there is one resource, users, served by a shared engine through a Node server and an MSW adapter. The [project plan](docs/PROJECT-PLAN.md) describes what comes next.
+**Status: pre-release, milestone M0.** Today there is one resource, users, served by a shared engine through a Node server, a Cloudflare Worker and an MSW adapter. The [project plan](docs/PROJECT-PLAN.md) describes what comes next.
+
+Live demo, stateless: https://loadstate.veliksergey.workers.dev/v1/users?limit=2
 
 ## Requirements
 

@@ -52,9 +52,11 @@ CI then runs two smoke checks. Both build first, write to a temporary directory 
 
 `pnpm --filter @loadstate/server dev:worker` runs the Workers entry locally for manual use.
 
+The public demo runs on Cloudflare Workers at `https://loadstate.veliksergey.workers.dev`. It is deployed manually from a logged-in machine with `pnpm build` then `pnpm --filter @loadstate/server exec wrangler deploy`, only with the user's explicit authorization for that deploy. CI never deploys.
+
 ## Branches
 
-`main` is the default branch of `github.com/sergev-magnetsusa/loadstate`. CI runs on pushes and pull requests to `main`. Agents never commit, push, tag, publish or deploy without the user's explicit authorization for that action.
+`main` is the default branch of `github.com/veliksergey/loadstate`. CI runs on pushes and pull requests to `main`. Agents never commit, push, tag, publish or deploy without the user's explicit authorization for that action.
 
 ## Invariants
 
