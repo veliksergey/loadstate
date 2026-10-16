@@ -12,7 +12,8 @@ export { maxBodyBytes };
 
 export interface AppOptions {
   engine?: Engine | undefined;
-  // absolute base for image URLs; defaults to each request's origin
+  // trusted base for image URLs and links; without it, each request's origin, which only
+  // a platform that routes by hostname (Workers) vouches for; startServer always passes one
   publicUrl?: string | undefined;
 }
 

@@ -1,8 +1,14 @@
 import type { Image } from "./contracts.js";
 import { corePack } from "./fixtures/index.js";
 import { deepFreeze } from "./freeze.js";
-import { paginate } from "./paginate.js";
-import { parseNoQuery, parseOffsetQuery, type QueryResult } from "./query.js";
+import { listRows } from "./list.js";
+import {
+  parseListQuery,
+  parseNoQuery,
+  parseReadQuery,
+  type QueryResult,
+  type View,
+} from "./query.js";
 import {
   type Relation,
   type Resource,
@@ -66,9 +72,7 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
 
   const routes: Route[] = [
     ...resources.flatMap((resource) => [
-      route("GET", `/v1/${resource.name}`, (_, request) =>
-        list(resource, store[resource.name], request),
-      ),
+      route("GET", `/v1/${resource.name}`, (_, request) => list(resource, request)),
       route("POST", `/v1/${resource.name}`, (_, request) =>
         write(resource, "create", undefined, request),
       ),
@@ -149,21 +153,8 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
     return store[name].find((row) => row.id === Number(id));
   }
 
-  function list(resource: Resource, rows: readonly Row[], request: EngineRequest): EngineResponse {
-    const query = parseOffsetQuery(request.query ?? []);
-    if (!query.ok) return invalidQuery(query);
-    const page = paginate(rows, query.value);
-    return json(200, {
-      ...page,
-      data: page.data.map((row) => present(resource, row, request.baseUrl)),
-    });
-  }
-
-  function read(resource: Resource, params: Params, request: EngineRequest): EngineResponse {
-    const query = parseNoQuery(request.query ?? []);
-    if (!query.ok) return invalidQuery(query);
-    const row = find(resource.name, params.id);
-    return row ? json(200, present(resource, row, request.baseUrl)) : notFound(resource);
+  function list(resource: Resource, request: EngineRequest): EngineResponse {
+    return listOf(resource, store[resource.name], request);
   }
 
   function related(
@@ -172,17 +163,70 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
     params: Params,
     request: EngineRequest,
   ): EngineResponse {
-    const query = parseOffsetQuery(request.query ?? []);
-    if (!query.ok) return invalidQuery(query);
-    const parent = find(resource.name, params.id);
-    if (!parent) return notFound(resource);
-    const rows = store[relation.resource].filter((row) => row[relation.foreignKey] === parent.id);
-    const page = paginate(rows, query.value);
     const child = resourceNamed(relation.resource);
-    return json(200, {
-      ...page,
-      data: page.data.map((row) => present(child, row, request.baseUrl)),
+    const parent = find(resource.name, params.id);
+    // the query is checked first, so a bad query on a missing parent is still 400
+    const rows = parent
+      ? store[relation.resource].filter((row) => row[relation.foreignKey] === parent.id)
+      : [];
+    return listOf(child, rows, request, parent ? undefined : resource);
+  }
+
+  function listOf(
+    resource: Resource,
+    rows: readonly Row[],
+    request: EngineRequest,
+    missingParent?: Resource,
+  ): EngineResponse {
+    const params = [...(request.query ?? [])];
+    const query = parseListQuery(resource, params, {
+      path: request.path,
+      pack: corePack.manifest.id,
     });
+    if (!query.ok) return invalidQuery(query);
+    if (missingParent) return notFound(missingParent);
+    const page = listRows(resource, rows, query.value, {
+      path: request.path,
+      baseUrl: request.baseUrl,
+      params,
+    });
+    return json(
+      200,
+      {
+        data: page.data.map((row) => shape(resource, row, request.baseUrl, query.value.view)),
+        meta: page.meta,
+      },
+      { link: page.link },
+    );
+  }
+
+  function read(resource: Resource, params: Params, request: EngineRequest): EngineResponse {
+    const query = parseReadQuery(resource, request.query ?? []);
+    if (!query.ok) return invalidQuery(query);
+    const row = find(resource.name, params.id);
+    return row ? json(200, shape(resource, row, request.baseUrl, query.value)) : notFound(resource);
+  }
+
+  // projection keeps the selected fields, then each expansion adds a full related record
+  function shape(
+    resource: Resource,
+    row: Row,
+    baseUrl: string | undefined,
+    view: View,
+  ): Record<string, unknown> {
+    const shown = present(resource, row, baseUrl);
+    if (view.fields === undefined && view.expand.length === 0) return shown;
+    const out: Record<string, unknown> = view.fields
+      ? Object.fromEntries(view.fields.map((field) => [field, shown[field]]))
+      : { ...shown };
+    for (const name of view.expand) {
+      const reference = resource.expansions[name];
+      if (!reference) continue;
+      const id = row[reference.field];
+      const target = id === null ? undefined : store[reference.resource].find((r) => r.id === id);
+      out[name] = target ? present(resourceNamed(reference.resource), target, baseUrl) : null;
+    }
+    return out;
   }
 
   function write(

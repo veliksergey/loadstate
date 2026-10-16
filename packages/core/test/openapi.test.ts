@@ -16,15 +16,21 @@ import {
   corePack,
   createEngine,
   createOpenApiDocument,
+  cursorMetaSchema,
   defaultLimit,
   type EngineRequest,
+  listParameterNames,
   maxLimit,
   type OpenApiVersion,
+  offsetMetaSchema,
+  pageNumberMetaSchema,
   pageSchema,
   postSchema,
   problemSchema,
   productSchema,
   type ResourceName,
+  readParameterNames,
+  resourceNamed,
   resources,
   todoSchema,
   userSchema,
@@ -118,9 +124,13 @@ describe("generated OpenAPI document", () => {
       "Address",
       "Image",
       "Problem",
+      "OffsetMeta",
+      "PageNumberMeta",
+      "CursorMeta",
       ...resources.flatMap((resource) => [
         resource.singular,
         `${resource.singular}Page`,
+        `${resource.singular}Projection`,
         `${resource.singular}Create`,
         `${resource.singular}Patch`,
       ]),
@@ -129,9 +139,31 @@ describe("generated OpenAPI document", () => {
     for (const resource of resources) {
       expect(components.schemas[`${resource.singular}Page`]).toMatchObject({
         properties: {
-          data: { type: "array", items: { $ref: `#/components/schemas/${resource.singular}` } },
+          data: {
+            type: "array",
+            items: {
+              anyOf: [
+                { $ref: `#/components/schemas/${resource.singular}` },
+                { $ref: `#/components/schemas/${resource.singular}Projection` },
+              ],
+            },
+          },
+          meta: {
+            anyOf: [
+              { $ref: "#/components/schemas/OffsetMeta" },
+              { $ref: "#/components/schemas/PageNumberMeta" },
+              { $ref: "#/components/schemas/CursorMeta" },
+            ],
+          },
         },
       });
+      const projection = components.schemas[`${resource.singular}Projection`];
+      expect(projection).toMatchObject({ additionalProperties: false });
+      expect(projection?.required ?? []).toEqual([]);
+      expect(Object.keys((projection?.properties as object) ?? {})).toEqual([
+        ...Object.keys(resource.schema.shape),
+        ...Object.keys(resource.expansions),
+      ]);
       expect(components.schemas[resource.singular]).toMatchObject({
         additionalProperties: false,
         required: Object.keys(resource.schema.shape),
@@ -202,6 +234,42 @@ describe("generated OpenAPI document", () => {
     expect(item.delete?.responses["204"]).toEqual({
       description: "Deleted; no body",
       headers: { "X-Mock-State": expect.any(Object) },
+    });
+  });
+
+  it.each(resources)("documents exactly the query parameters $name accepts", (resource) => {
+    const paths = load("3.1.2").paths;
+    const names = (operation: Operation | undefined) =>
+      (operation?.parameters ?? []).filter((p) => p.name !== "id").map((p) => p.name);
+    expect(names(paths[`/v1/${resource.name}`]?.get)).toEqual(listParameterNames(resource));
+    expect(names(paths[`/v1/${resource.name}/{id}`]?.get)).toEqual(readParameterNames(resource));
+    for (const [relation, { resource: child }] of Object.entries(resource.relations)) {
+      expect(names(paths[`/v1/${resource.name}/{id}/${relation}`]?.get)).toEqual(
+        listParameterNames(resourceNamed(child)),
+      );
+    }
+    for (const write of ["put", "patch", "delete"]) {
+      expect(names(paths[`/v1/${resource.name}/{id}`]?.[write])).toEqual([]);
+    }
+  });
+
+  it("documents filter types from the record schema", () => {
+    const parameters = load("3.1.2").paths["/v1/comments"]?.get?.parameters ?? [];
+    const schema = (name: string) => parameters.find((p) => p.name === name)?.schema;
+    expect(schema("parentId")).toEqual({
+      anyOf: [{ type: "integer" }, { type: "string", enum: ["null"] }],
+    });
+    expect(schema("parentId_gt")).toEqual({ type: "integer" });
+    expect(schema("createdAt_gte")).toEqual({
+      anyOf: [
+        { type: "string", format: "date" },
+        { type: "string", format: "date-time" },
+      ],
+    });
+    const products = load("3.1.2").paths["/v1/products"]?.get?.parameters ?? [];
+    expect(products.find((p) => p.name === "status")?.schema).toEqual({
+      type: "string",
+      enum: ["active", "draft", "discontinued"],
     });
   });
 
@@ -311,7 +379,46 @@ describe("engine responses against the document", () => {
       ),
     ]),
     ["invalid list query", "/v1/users", "get", get("/v1/users", "limit=0&page=2"), 400],
-    ["query on a read", "/v1/posts/{id}", "get", get("/v1/posts/1", "fields=title"), 400],
+    ["page mode", "/v1/products", "get", get("/v1/products", "page=2&perPage=5"), 200],
+    [
+      "cursor mode with a total",
+      "/v1/posts",
+      "get",
+      get("/v1/posts", "pagination=cursor&limit=5&withTotal=true&sort=-publishedAt"),
+      200,
+    ],
+    [
+      "search, filters and sort",
+      "/v1/products",
+      "get",
+      get("/v1/products", "q=a&status=active&priceMinor_gte=1000&sort=-rating,title"),
+      200,
+    ],
+    ["a projection", "/v1/users", "get", get("/v1/users", "fields=id,name&limit=3"), 200],
+    [
+      "expansions",
+      "/v1/comments",
+      "get",
+      get("/v1/comments", "expand=author,post,parent&limit=5"),
+      200,
+    ],
+    [
+      "a projected and expanded read",
+      "/v1/posts/{id}",
+      "get",
+      get("/v1/posts/1", "fields=id,title&expand=author"),
+      200,
+    ],
+    [
+      "a projected nested list",
+      "/v1/users/{id}/todos",
+      "get",
+      get("/v1/users/1/todos", "fields=id,completed&completed=false&page=1"),
+      200,
+    ],
+    ["a malformed cursor", "/v1/posts", "get", get("/v1/posts", "cursor=nope"), 400],
+    ["mixed pagination modes", "/v1/posts", "get", get("/v1/posts", "page=2&offset=1"), 400],
+    ["list parameter on a read", "/v1/posts/{id}", "get", get("/v1/posts/1", "limit=2"), 400],
     [
       "nested list of a missing parent",
       "/v1/users/{id}/posts",
@@ -405,6 +512,21 @@ describe("engine responses against the document", () => {
   });
 });
 
+// the same projection the generator registers: every field optional, expansions added
+function projectionOf(name: ResourceName): z.ZodType {
+  const resource = resourceNamed(name);
+  return resource.schema
+    .partial()
+    .extend(
+      Object.fromEntries(
+        Object.entries(resource.expansions).map(([key, reference]) => [
+          key,
+          resourceNamed(reference.resource).schema.nullable().optional(),
+        ]),
+      ),
+    );
+}
+
 describe("Zod and the generated JSON Schema give the expected verdict", () => {
   const component = (name: string) =>
     `${urls.get("3.2.1")}#/${pointer("components", "schemas", name)}`;
@@ -488,6 +610,63 @@ describe("Zod and the generated JSON Schema give the expected verdict", () => {
         meta: { limit: 2, offset: 0, total: users.length, hasMore: true },
       },
       true,
+    ],
+    [
+      "a numbered page",
+      "PageNumberMeta",
+      pageNumberMetaSchema,
+      { page: 2, perPage: 5, total: 30, totalPages: 6, hasMore: true },
+      true,
+    ],
+    [
+      "a cursor page without a total",
+      "CursorMeta",
+      cursorMetaSchema,
+      { limit: 5, nextCursor: "abc", prevCursor: null, hasMore: true },
+      true,
+    ],
+    [
+      "a cursor page with an empty cursor",
+      "CursorMeta",
+      cursorMetaSchema,
+      { limit: 5, nextCursor: "", prevCursor: null, hasMore: true },
+      false,
+    ],
+    [
+      "meta mixing offset and page fields",
+      "OffsetMeta",
+      offsetMetaSchema,
+      { limit: 2, offset: 0, total: 1, hasMore: false, page: 1 },
+      false,
+    ],
+    [
+      "a projected user",
+      "UserProjection",
+      projectionOf("users"),
+      { id: 1, email: "a@example.com" },
+      true,
+    ],
+    ["an empty projection", "UserProjection", projectionOf("users"), {}, true],
+    [
+      "a projection with an unknown field",
+      "UserProjection",
+      projectionOf("users"),
+      { id: 1, nickname: "x" },
+      false,
+    ],
+    [
+      "an expanded comment",
+      "CommentProjection",
+      projectionOf("comments"),
+      { ...comment, author: user, post, parent: null },
+      true,
+    ],
+    [
+      "an expansion that is not a record",
+      "PostProjection",
+      projectionOf("posts"),
+      { id: 1, author: { id: 1 } },
+      false,
     ],
     [
       "a problem with errors",

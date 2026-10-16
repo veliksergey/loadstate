@@ -44,6 +44,12 @@ describe("routing", () => {
     expect(response.status).toBe(200);
     expect(response.headers).toEqual({
       "content-type": "application/json",
+      link: [
+        '</v1/users?limit=2&offset=0>; rel="first"',
+        '</v1/users?limit=2&offset=0>; rel="prev"',
+        '</v1/users?limit=2&offset=3>; rel="next"',
+        `</v1/users?limit=2&offset=${userCount - 2}>; rel="last"`,
+      ].join(", "),
       "x-mock-state": "memory",
     });
     const page = pageSchema(userSchema).parse(response.body);
@@ -130,11 +136,11 @@ describe("routing", () => {
     expect(response.headers.allow).toBe("GET, HEAD, PUT, PATCH, DELETE");
   });
 
-  it("rejects query parameters on routes that take none", () => {
-    const read = get(memory(), "/v1/users/1", "fields=name");
+  it("rejects list parameters on a read and any parameter on a write", () => {
+    const read = get(memory(), "/v1/users/1", "limit=2");
     expect(read.status).toBe(400);
     expect(errors(read.body)).toEqual([
-      { field: "fields", code: "unknown_parameter", message: 'Unknown query parameter "fields".' },
+      { field: "limit", code: "unknown_parameter", message: 'Unknown query parameter "limit".' },
     ]);
 
     const create = memory().handle({
@@ -465,7 +471,7 @@ describe("resources", () => {
     const page = get(engine, "/v1/categories/1/children", "limit=1&offset=1");
     expect(page.body).toMatchObject({ meta: { limit: 1, offset: 1, total: 2, hasMore: false } });
     expect(get(engine, "/v1/users/1/posts", "limit=0").status).toBe(400);
-    expect(get(engine, "/v1/users/1/posts", "sort=id").status).toBe(400);
+    expect(get(engine, "/v1/users/1/posts", "sort=nope").status).toBe(400);
   });
 
   it("answers a nested list of a missing parent with 404", () => {

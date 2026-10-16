@@ -12,7 +12,7 @@ Loadstate is a fake REST API and scenario toolkit for front-end development and 
 
 | Path | Contents |
 |---|---|
-| `packages/core` | Zod contracts (`src/contracts.ts`), the resource registry (`src/resources.ts`), the generated fixture pack (`src/fixtures/`), query parsing, pagination, Problem Details, the engine (`createEngine`) that routes and answers every `/v1` request, and the OpenAPI generator (`createOpenApiDocument`). Portable: no Node, DOM or Workers APIs. Its fixture generator lives in `scripts/` and runs only at development time. |
+| `packages/core` | Zod contracts (`src/contracts.ts`), the resource registry with each resource's relations and query rules (`src/resources.ts`), the generated fixture pack (`src/fixtures/`), the query parser (`src/query.ts`) and list pipeline (`src/list.ts`: search, filters, sort, pagination, cursors, links), write rules (`src/writes.ts`), Problem Details, the engine (`createEngine`) that routes and answers every `/v1` request, and the OpenAPI generator (`createOpenApiDocument`). Portable: no Node, DOM or Workers APIs. Its fixture generator lives in `scripts/` and runs only at development time. |
 | `packages/server` | Hono adapter (`createApp`): health routes, the request body limit, and a catch-all that hands `/v1/*` to an engine. Node entry (`node.ts`, executable `main.ts`) and Workers entry (`worker.ts`). |
 | `packages/msw` | MSW 3 adapter (`createHandlers`) that forwards requests under a base URL to an engine. Portable: builds without Node types. |
 
@@ -48,7 +48,7 @@ CI then runs two smoke checks. Both build first, write to a temporary directory 
 | Check | Command | Proves |
 |---|---|---|
 | Pack | `pnpm smoke:pack` | Each tarball holds exactly `package.json`, `LICENSE` and the compiled `src` files; the packages install into a fresh project and work there with plain Node and TypeScript |
-| Worker | `pnpm smoke:worker` | The Workers entry runs under local Wrangler and answers health, lists, a stateless create, PATCH and DELETE, a blocked delete, 405 and 413 |
+| Worker | `pnpm smoke:worker` | The Workers entry runs under local Wrangler and answers health, lists, a projected cursor walk, an expanded read, a stateless create, PATCH and DELETE, a blocked delete, 405 and 413 |
 
 `pnpm --filter @loadstate/server dev:worker` runs the Workers entry locally for manual use.
 
@@ -68,7 +68,8 @@ The public demo runs on Cloudflare Workers at `https://loadstate.veliksergey.wor
 - Each engine is an isolated run: records, next ids and sequence positions never leak between engines, and `reset()` restores all of them.
 - Write rules live in `packages/core/src/writes.ts`: each resource's input contract, defaults, references, structural checks and derived fields. A stored record always satisfies its record schema and the pack's structure, and deletes never cascade.
 - REST errors are RFC 9457 Problem Details (`application/problem+json`) with a stable `code`. A 5xx body never contains an exception message or stack.
-- Query input is validated strictly. Invalid, out-of-range, repeated and unknown parameters return 400; nothing is coerced or silently ignored.
+- Query input is validated strictly. Invalid, out-of-range, repeated, conflicting and unknown parameters return 400; nothing is coerced or silently ignored. A filter's type comes from the record's Zod schema, and the OpenAPI parameters come from the same name lists the parser accepts (`listParameterNames`, `readParameterNames`).
+- Cursors bind the route, the fixture pack, the search, the filters and the sort, and end their sort tuple with the unique `id`; links and image URLs use only the trusted base URL an adapter passes in: the configured `publicUrl` or the listening origin on Node, never the `Host` header.
 - The Node server binds to loopback unless a caller explicitly passes another host.
 - The public demo is stateless, simulation controls never bypass host limits, and management never shares the data routes (`docs/TECHNICAL-DECISIONS.md`, section 6).
 - Package builds start from an empty `dist`, and a packed manifest points only at `dist` (`publishConfig.exports`).

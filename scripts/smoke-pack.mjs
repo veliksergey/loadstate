@@ -76,6 +76,13 @@ try {
   assert.equal(body.username, user.username);
   assert.ok(body.avatar.url.startsWith(server.url + "/img/avatar/"));
 
+  const page = await fetch(server.url + "/v1/users?page=2&perPage=5&sort=name&fields=id,name");
+  assert.equal(page.status, 200);
+  const listed = await page.json();
+  assert.deepEqual(Object.keys(listed.data[0]), ["id", "name"]);
+  assert.equal(listed.meta.page, 2);
+  assert.ok(page.headers.get("link").includes('rel="next"'));
+
   const patched = await fetch(location, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
@@ -113,7 +120,15 @@ try {
 console.log("consumer runtime check passed");
 `;
 
-const typeCheck = `import { createEngine, type Engine, type PostCreate, type User } from "@loadstate/core";
+const typeCheck = `import {
+  createEngine,
+  type Engine,
+  type ListMeta,
+  parseListQuery,
+  type PostCreate,
+  resourceNamed,
+  type User,
+} from "@loadstate/core";
 import { createHandlers } from "@loadstate/msw";
 import { type RunningServer, startServer } from "@loadstate/server";
 
@@ -122,6 +137,11 @@ export const handlers = createHandlers(engine, { baseUrl: "http://api.smoke.test
 export const running: Promise<RunningServer> = startServer({ port: 0, engine });
 export const nobody: User | undefined = undefined;
 export const draft: PostCreate = { userId: 1, title: "Title", body: "Body" };
+export const parsed = parseListQuery(resourceNamed("posts"), [["sort", "-createdAt"]], {
+  path: "/v1/posts",
+  pack: "core@1",
+});
+export const meta: ListMeta = { limit: 5, nextCursor: null, prevCursor: null, hasMore: false };
 
 // fails to compile if the shipped declarations resolved to any
 // @ts-expect-error a state is required

@@ -48,7 +48,7 @@ describe("GET /v1/users", () => {
   });
 
   it("rejects an invalid query as Problem Details", async () => {
-    const { response, body } = await get("/v1/users?page=2&limit=0");
+    const { response, body } = await get("/v1/users?nickname=x&limit=0");
     expect(response.status).toBe(400);
     expect(response.headers.get("content-type")).toBe("application/problem+json");
     expect(body).toEqual({
@@ -58,7 +58,11 @@ describe("GET /v1/users", () => {
       detail: "The query string is not valid.",
       code: "invalid_query",
       errors: [
-        { field: "page", code: "unknown_parameter", message: 'Unknown query parameter "page".' },
+        {
+          field: "nickname",
+          code: "unknown_parameter",
+          message: 'Unknown query parameter "nickname".',
+        },
         { field: "limit", code: "out_of_range", message: '"limit" must be between 1 and 100.' },
       ],
     });

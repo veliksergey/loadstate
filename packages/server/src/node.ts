@@ -1,6 +1,6 @@
 import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
-import type { Engine } from "@loadstate/core";
+import { createEngine, type Engine } from "@loadstate/core";
 import { createApp } from "./app.js";
 
 export const defaultPort = 4000;
@@ -23,12 +23,17 @@ export function startServer({
   engine,
   publicUrl,
 }: StartOptions = {}): Promise<RunningServer> {
+  const shared = engine ?? createEngine({ state: "stateless" });
   return new Promise((resolve, reject) => {
+    // the Host header is client-controlled, so links and image URLs never come from it
+    let app = createApp({ engine: shared, publicUrl });
     const onListening = (info: AddressInfo) => {
       server.off("error", reject);
       const host = info.address.includes(":") ? `[${info.address}]` : info.address;
+      const url = `http://${host}:${info.port}`;
+      if (publicUrl === undefined) app = createApp({ engine: shared, publicUrl: url });
       resolve({
-        url: `http://${host}:${info.port}`,
+        url,
         close: () =>
           new Promise((done, fail) => server.close((error) => (error ? fail(error) : done()))),
       });
@@ -36,7 +41,7 @@ export function startServer({
     // keep Node's own Request and Response globals for tests and interceptors
     const server = serve(
       {
-        fetch: createApp({ engine, publicUrl }).fetch,
+        fetch: (request) => app.fetch(request),
         port,
         hostname,
         overrideGlobalObjects: false,

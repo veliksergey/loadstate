@@ -1,6 +1,6 @@
 # API spec: M1 surface
 
-Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 and 2 implement the resources, the REST routes and the write rules below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
+Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 to 3 implement the resources, the REST routes, the write rules, the query parameters and the list responses below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
 
 `api.loadstate.example` is a placeholder until the name and domain are chosen.
 
@@ -38,7 +38,7 @@ A relation is read as a nested list with the same pagination rules: `/v1/users/7
 
 Valid edge packs include records with omitted optional fields, explicit nulls, empty strings, zero stock, long text, Unicode and RTL names, duplicate display names, date boundaries and missing optional relations. Fault packs with malformed or invalid records are separately labeled and arrive in M1b.
 
-Every image field is an object. Fixtures store its `url` as a path under `/img`; responses make it absolute with the base URL of the request, so the same data works on every host. The Node server uses its configured `publicUrl` or the request origin, the Worker uses the hostname Cloudflare routed the request to, and the MSW adapter uses its `baseUrl`, path prefix included. The `/img` endpoint that serves these URLs arrives in M1a step 5. Blur metadata is optional and documented when added.
+Every image field is an object. Fixtures store its `url` as a path under `/img`; responses make it absolute with a trusted base URL, so the same data works on every host. The Node server uses its configured `publicUrl` or its own listening origin, never the client's `Host` header; the Worker uses the hostname Cloudflare routed the request to, and the MSW adapter uses its `baseUrl`, path prefix included. The `/img` endpoint that serves these URLs arrives in M1a step 5. Blur metadata is optional and documented when added.
 
 ```json
 {
@@ -119,19 +119,40 @@ Checks run in a fixed order, and the first failing step answers: route and metho
 
 ## Query parameters
 
+Lists and nested lists accept every parameter below. A single read accepts only `fields` and `expand`, and writes accept none. Unknown, repeated and malformed parameters return 400 `invalid_query` with one field error per problem; nothing is coerced or ignored.
+
 | Parameter | Example | Notes |
 |---|---|---|
-| `limit`, `offset` | `limit=20&offset=40` | Default mode; `limit` defaults to 20, maximum 100 |
-| `pagination=page`, `page`, `perPage` | `pagination=page&page=3&perPage=20` | Page mode |
-| `pagination=cursor`, `limit`, `cursor` | `pagination=cursor&limit=20` then `&cursor=...` | Cursor mode; the first page has no cursor; `withTotal=true` opts into a total |
-| `q` | `q=lamp` | Search over a documented per-resource field list; case-insensitive, Unicode-normalized |
-| field filters | `status=active&userId=7` | Exact match on allowlisted fields |
-| range filters | `priceMinor_gte=1000&priceMinor_lte=5000` | `_gt`, `_gte`, `_lt`, `_lte`, `_ne` on numeric and date fields |
-| `sort` | `sort=-createdAt,title` | Allowlisted fields; `-` descending; `id` always breaks ties |
-| `fields` | `fields=id,title,priceMinor` | Top-level scalar fields only; unknown fields are rejected |
-| `expand` | `expand=author` | Allowlisted relations, depth one in M1 |
+| `limit`, `offset` | `limit=20&offset=40` | Offset mode, the default; `limit` 1 to 100, default 20 |
+| `page`, `perPage` | `page=3&perPage=20` | Page mode; `page` from 1, `perPage` 1 to 100, default 20; a page past the end is an empty 200 |
+| `cursor`, `limit`, `withTotal` | `pagination=cursor&limit=20`, then `cursor=...` | Cursor mode; the first page has no cursor; `withTotal=true` adds `meta.total` |
+| `pagination` | `pagination=cursor` | `offset`, `page` or `cursor`; when omitted, `page` or `perPage` choose page mode and `cursor` chooses cursor mode. `withTotal` does not choose a mode |
+| `q` | `q=lamp` | Every whitespace-separated term must appear in the resource's search fields; 1 to 100 characters, counted as Unicode code points like every length limit |
+| field filters | `status=active&userId=7` | Exact match on the resource's filter fields, parsed by type; `null` for nullable fields; `tags=react` means the tags include `react` |
+| `_ne` | `status_ne=draft` | Any filter field |
+| `_gt`, `_gte`, `_lt`, `_lte` | `priceMinor_gte=1000&priceMinor_lte=5000` | Numeric, date and date-time filter fields |
+| `sort` | `sort=-createdAt,title` | Up to 4 sortable fields; `-` sorts descending; `id` breaks every tie |
+| `fields` | `fields=id,title,priceMinor` | Top-level scalar fields only, returned in the record's own field order |
+| `expand` | `expand=author` | To-one related records, depth one |
 
-One pagination mode per request. Conflicting mode parameters, invalid numbers, unknown controls and duplicate scalar parameters return 400 with a Problem Details body.
+One pagination mode per request. A parameter of another mode, a `pagination` value that contradicts the others, or `withTotal` outside cursor mode is 400 `conflicting_parameter`.
+
+| Resource | `q` searches | Filters | Sort | Expand |
+|---|---|---|---|---|
+| `users` | `name`, `username`, `email` | `role`, `status`, `locale`, `createdAt` | `id`, `name`, `username`, `email`, `createdAt`, `updatedAt` | none |
+| `posts` | `title`, `excerpt`, `tags` | `userId`, `status`, `tags`, `readingTimeMinutes`, `publishedAt`, `createdAt` | `id`, `title`, `readingTimeMinutes`, `publishedAt`, `createdAt`, `updatedAt` | `author` |
+| `comments` | `body` | `postId`, `userId`, `parentId`, `likes`, `createdAt` | `id`, `likes`, `createdAt`, `updatedAt` | `author`, `post`, `parent` |
+| `categories` | `name` | `parentId` | `id`, `name`, `createdAt`, `updatedAt` | `parent` |
+| `products` | `title`, `description`, `brand` | `categoryId`, `status`, `currency`, `brand`, `priceMinor`, `rating`, `ratingCount`, `stock`, `createdAt` | `id`, `title`, `priceMinor`, `rating`, `ratingCount`, `stock`, `createdAt`, `updatedAt` | `category` |
+| `todos` | `title` | `userId`, `completed`, `priority`, `dueDate`, `createdAt` | `id`, `title`, `completed`, `priority`, `dueDate`, `createdAt`, `updatedAt` | `user` |
+
+- **Text is folded the same way for search and sort.** NFKD normalization, every combining mark (Unicode category M) removed, then lowercase, so `q=zoe` finds "Zoë". The result does not depend on the runtime's locale data.
+- **Filter values are typed.** Integers and numbers are plain decimals, booleans are `true` or `false`, enums take a documented value, and dates are `YYYY-MM-DD`. A number must be finite. A date-time filter takes an ISO 8601 date-time with `Z` or an offset and at most millisecond precision, or a bare date that means its first instant in UTC.
+- **Nulls.** A null value matches `field=null`, and `field_ne=value` for any non-null value. It never matches `_gt`, `_gte`, `_lt` or `_lte`. `field_ne=null` selects the records that have a value.
+- **Sort order.** Nulls come last in both directions. Strings order by folded text, then by code units; enums by their declared order, for example todo `priority` low, normal, high; booleans false first; dates chronologically. Without `sort`, a list is in ascending `id` order.
+- **Expansions.** Posts expand `author` from `userId`; comments `author`, `post` and `parent`; categories `parent`; products `category`; todos `user`. An expanded record is the full record with absolute image URLs, or `null` when the reference is null. `fields` applies to the listed record, and expansions are added after it. To-many relations stay on the nested routes.
+- **Cursors** are opaque strings of at most 2048 characters. Each one is bound to its route, the fixture pack, the search, the filters and the sort; `limit`, `fields` and `expand` may change between pages. A malformed cursor is 400 `invalid_cursor`, and a cursor reused with a different route, pack, search, filter or sort is 400 `cursor_mismatch`; either way, start again without a cursor.
+- **Cursors in a memory engine** stay valid across writes and continue after their boundary row's sort values. Records added before the boundary are not shown, deleted records disappear, and a record whose sort value changes can show twice or not at all. Rejecting a cursor after a write is M1b work.
 
 ## Responses
 
@@ -151,14 +172,22 @@ GET /v1/products?limit=2&sort=-priceMinor&fields=id,title,priceMinor,currency
 }
 ```
 
-Cursor envelope:
+Page envelope meta, for `page=2&perPage=12`:
+
+```json
+{ "page": 2, "perPage": 12, "total": 96, "totalPages": 8, "hasMore": true }
+```
+
+Cursor envelope; `meta.total` appears only with `withTotal=true`:
 
 ```json
 {
   "data": ["...20 posts..."],
-  "meta": { "limit": 20, "nextCursor": "b2Zmc2V0...", "prevCursor": null, "hasMore": true }
+  "meta": { "limit": 20, "nextCursor": "eyJ2IjoxLCJoIjoi...", "prevCursor": null, "hasMore": true }
 }
 ```
+
+`fields` and `expand` change each record's shape; the OpenAPI document describes those records as `{Singular}Projection`, with every field optional and the expansions added.
 
 Single records are bare objects. Errors use RFC 9457 Problem Details with a stable `code` and a field-error extension:
 
@@ -176,7 +205,7 @@ Single records are bare objects. Errors use RFC 9457 Problem Details with a stab
 }
 ```
 
-Response headers: `Link` (`next`, `prev`, `first`, `last` where applicable), `ETag` (with 304 on `If-None-Match` for cacheable fixtures), `Retry-After` on 429 and 503, `X-Mock-State` (`stateless` or `memory`), and `X-Mock-Applied` listing the controls and recipe that shaped the response. All of these are listed in `Access-Control-Expose-Headers`. Anonymous public reads allow any origin without credentials. Simulated failures, delays and stateful responses are `no-store`; normal fixtures and images opt into caching.
+Every list response carries `Link` with `first`, `prev` and `next` where they apply and, outside cursor mode, `last`. A link keeps the request's other parameters and uses the deployment's trusted base URL: the configured `publicUrl` or the listening origin on Node, the routed hostname on Workers, the MSW `baseUrl`, and a root-relative path in-process. Planned response headers: `ETag` (with 304 on `If-None-Match` for cacheable fixtures), `Retry-After` on 429 and 503, `X-Mock-State` (`stateless` or `memory`), and `X-Mock-Applied` listing the controls and recipe that shaped the response. All of these are listed in `Access-Control-Expose-Headers`. Anonymous public reads allow any origin without credentials. Simulated failures, delays and stateful responses are `no-store`; normal fixtures and images opt into caching.
 
 ## Simulation controls
 

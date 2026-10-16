@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { request } from "node:http";
 import { corePack, createEngine, pageSchema, userSchema } from "@loadstate/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { maxBodyBytes } from "../src/app.js";
@@ -21,6 +22,48 @@ describe("startServer", () => {
       const list = await fetch(`${server.url}/v1/users?limit=2`);
       expect(list.status).toBe(200);
       expect(pageSchema(userSchema).parse(await list.json()).data).toHaveLength(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  // fetch may not send a custom Host header, so this uses node:http directly
+  function getWithHost(url: string, host: string) {
+    return new Promise<{ link: string; body: string }>((resolve, reject) => {
+      const req = request(url, { headers: { host } }, (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        res.on("end", () => resolve({ link: String(res.headers.link ?? ""), body }));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  it("builds links and image URLs from its own origin, not the Host header", async () => {
+    const server = await startServer({ port: 0 });
+    try {
+      const { link, body } = await getWithHost(
+        `${server.url}/v1/users?limit=1`,
+        "attacker.example",
+      );
+      expect(link).toContain(`<${server.url}/v1/users?limit=1&offset=0>; rel="first"`);
+      expect(link).not.toContain("attacker.example");
+      expect(body).toContain(`"url":"${server.url}/img/avatar/`);
+      expect(body).not.toContain("attacker.example");
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("uses a configured public URL instead of its own origin", async () => {
+    const server = await startServer({ port: 0, publicUrl: "https://api.example.test" });
+    try {
+      const { link } = await getWithHost(`${server.url}/v1/users?limit=1`, "attacker.example");
+      expect(link).toContain('<https://api.example.test/v1/users?limit=1&offset=0>; rel="first"');
     } finally {
       await server.close();
     }

@@ -29,6 +29,7 @@ export {
   userCreateSchema,
   userSchema,
 } from "./contracts.js";
+export { decodeCursor, encodeCursor, maxCursorLength } from "./cursor.js";
 export {
   createEngine,
   type Engine,
@@ -37,26 +38,46 @@ export {
   type EngineState,
   sequenceStatuses,
 } from "./engine.js";
+export { type FieldKind, type FieldType, fieldKind } from "./fields.js";
 export { corePack, type FixturePack } from "./fixtures/index.js";
+export { type ListPage, listRows } from "./list.js";
 export { createOpenApiDocument, type OpenApiDocument, type OpenApiVersion } from "./openapi.js";
 export {
+  type CursorMeta,
+  cursorMetaSchema,
+  type ListMeta,
+  listMetaSchema,
+  type OffsetMeta,
+  offsetMetaSchema,
   type Page,
-  type PageMeta,
-  pageMetaSchema,
+  type PageNumberMeta,
+  pageNumberMetaSchema,
   pageSchema,
   paginate,
 } from "./paginate.js";
 export {
   defaultLimit,
+  type Filter,
+  type FilterOperator,
+  type ListQuery,
+  listParameterNames,
   maxLimit,
-  type OffsetQuery,
+  maxSearchLength,
+  maxSortFields,
+  type PaginationMode,
+  parseListQuery,
   parseNoQuery,
-  parseOffsetQuery,
+  parseReadQuery,
   type QueryIssue,
   type QueryIssueCode,
   type QueryResult,
+  readParameterNames,
+  type SortKey,
+  selectableFields,
+  type View,
 } from "./query.js";
 export {
+  type Reference,
   type Relation,
   type Resource,
   type ResourceName,

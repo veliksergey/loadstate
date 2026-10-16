@@ -1,8 +1,26 @@
 import { z } from "zod";
 import { addressSchema, imageSchema } from "./contracts.js";
-import { pageSchema } from "./paginate.js";
-import { defaultLimit, maxLimit } from "./query.js";
-import { resourceNamed, resources } from "./resources.js";
+import { maxCursorLength } from "./cursor.js";
+import type { FieldKind } from "./fields.js";
+import {
+  cursorMetaSchema,
+  offsetMetaSchema,
+  pageNumberMetaSchema,
+  pageSchema,
+} from "./paginate.js";
+import {
+  defaultLimit,
+  kindOf,
+  listParameterNames,
+  maxFilterLength,
+  maxLimit,
+  maxSearchLength,
+  maxSortFields,
+  paginationModes,
+  readParameterNames,
+  selectableFields,
+} from "./query.js";
+import { type Resource, resourceNamed, resources } from "./resources.js";
 import { maxBodyBytes, problemSchema } from "./response.js";
 import { writeRules } from "./writes.js";
 
@@ -19,18 +37,152 @@ const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 const mockState = { $ref: "#/components/headers/MockState" };
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
-const pageParameters = [
-  {
-    name: "limit",
-    in: "query",
-    schema: { type: "integer", minimum: 1, maximum: maxLimit, default: defaultLimit },
+const query = (name: string, description: string, schema: Record<string, unknown>) => ({
+  name,
+  in: "query",
+  description,
+  schema,
+});
+
+// query values arrive as text, so a nullable filter also accepts the word null
+function filterSchema(kind: FieldKind, allowNull: boolean): Record<string, unknown> {
+  const byType: Record<string, Record<string, unknown>> = {
+    integer: { type: "integer" },
+    number: { type: "number" },
+    boolean: { type: "boolean" },
+    enum: { type: "string", enum: kind.values },
+    date: { type: "string", format: "date" },
+    datetime: {
+      anyOf: [
+        { type: "string", format: "date" },
+        { type: "string", format: "date-time" },
+      ],
+    },
+  };
+  const schema = byType[kind.type] ?? { type: "string", minLength: 1, maxLength: maxFilterLength };
+  return allowNull && kind.nullable
+    ? { anyOf: [schema, { type: "string", enum: ["null"] }] }
+    : schema;
+}
+
+const operatorText: Record<string, string> = {
+  ne: "differs from",
+  gt: "is greater than",
+  gte: "is at least",
+  lt: "is less than",
+  lte: "is at most",
+};
+
+function parameterFor(resource: Resource, name: string) {
+  const list = (items: readonly string[]) => items.join(", ");
+  const expansions = Object.keys(resource.expansions);
+  switch (name) {
+    case "pagination":
+      return query(name, "Pagination mode; inferred from page, perPage or cursor when omitted", {
+        type: "string",
+        enum: [...paginationModes],
+      });
+    case "limit":
+      return query(name, "Page size in offset and cursor modes", {
+        type: "integer",
+        minimum: 1,
+        maximum: maxLimit,
+        default: defaultLimit,
+      });
+    case "offset":
+      return query(name, "Rows to skip in offset mode", {
+        type: "integer",
+        minimum: 0,
+        maximum: Number.MAX_SAFE_INTEGER,
+        default: 0,
+      });
+    case "page":
+      return query(name, "Page number in page mode", {
+        type: "integer",
+        minimum: 1,
+        maximum: Number.MAX_SAFE_INTEGER,
+        default: 1,
+      });
+    case "perPage":
+      return query(name, "Page size in page mode", {
+        type: "integer",
+        minimum: 1,
+        maximum: maxLimit,
+        default: defaultLimit,
+      });
+    case "cursor":
+      return query(
+        name,
+        "nextCursor or prevCursor from an earlier cursor page; valid only with the same search, filters and sort",
+        { type: "string", minLength: 1, maxLength: maxCursorLength },
+      );
+    case "withTotal":
+      return query(name, "Adds meta.total in cursor mode; counting reads the whole list", {
+        type: "boolean",
+        default: false,
+      });
+    case "q":
+      return query(
+        name,
+        `Every term must appear in: ${list(resource.search)}; case and accents are ignored`,
+        { type: "string", minLength: 1, maxLength: maxSearchLength },
+      );
+    case "sort":
+      return query(
+        name,
+        `Comma list of up to ${maxSortFields} of: ${list(resource.sortable)}; a leading - sorts descending, id breaks ties, nulls come last`,
+        { type: "string", minLength: 1 },
+      );
+    case "fields":
+      return query(
+        name,
+        `Comma list of the fields to return: ${list(selectableFields(resource))}`,
+        {
+          type: "string",
+          minLength: 1,
+        },
+      );
+    case "expand":
+      return query(name, `Comma list of related records to add: ${list(expansions)}`, {
+        type: "string",
+        minLength: 1,
+      });
+    default: {
+      const [field = name, operator = "eq"] = name.split("_");
+      const kind = kindOf(resource, field);
+      const what =
+        operator === "eq"
+          ? kind.type === "tags"
+            ? `Only records whose ${field} include this value`
+            : `Only records whose ${field} equals this value`
+          : kind.type === "tags"
+            ? `Only records whose ${field} do not include this value`
+            : `Only records whose ${field} ${operatorText[operator]} this value`;
+      return query(
+        name,
+        kind.type === "datetime" ? `${what}; a bare date means its first instant in UTC` : what,
+        filterSchema(kind, operator === "eq" || operator === "ne"),
+      );
+    }
+  }
+}
+
+const listParameters = (resource: Resource) =>
+  listParameterNames(resource).map((name) => parameterFor(resource, name));
+const readParameters = (resource: Resource) =>
+  readParameterNames(resource).map((name) => parameterFor(resource, name));
+
+const linkHeader = {
+  Link: {
+    description: "RFC 8288 links: first, prev, next and, outside cursor mode, last",
+    required: true,
+    schema: { type: "string" },
   },
-  {
-    name: "offset",
-    in: "query",
-    schema: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER, default: 0 },
-  },
-];
+};
+
+const view = (resource: Resource) => ({
+  anyOf: [ref(resource.singular), ref(`${resource.singular}Projection`)],
+});
 
 const idParameter = {
   name: "id",
@@ -39,11 +191,15 @@ const idParameter = {
   schema: { type: "integer", minimum: 1 },
 };
 
-function jsonResponse(description: string, schema: string, headers: Record<string, unknown> = {}) {
+function jsonResponse(
+  description: string,
+  schema: string | Record<string, unknown>,
+  headers: Record<string, unknown> = {},
+) {
   return {
     description,
     headers: { "X-Mock-State": mockState, ...headers },
-    content: { "application/json": { schema: ref(schema) } },
+    content: { "application/json": { schema: typeof schema === "string" ? ref(schema) : schema } },
   };
 }
 
@@ -65,9 +221,16 @@ function componentSchemas() {
   const registry = z.registry<{ id: string }>();
   registry.add(imageSchema, { id: "Image" });
   registry.add(addressSchema, { id: "Address" });
+  registry.add(offsetMetaSchema, { id: "OffsetMeta" });
+  registry.add(pageNumberMetaSchema, { id: "PageNumberMeta" });
+  registry.add(cursorMetaSchema, { id: "CursorMeta" });
+  for (const resource of resources) registry.add(resource.schema, { id: resource.singular });
   for (const resource of resources) {
-    registry.add(resource.schema, { id: resource.singular });
-    registry.add(pageSchema(resource.schema), { id: `${resource.singular}Page` });
+    const projection = projectionSchema(resource);
+    registry.add(projection, { id: `${resource.singular}Projection` });
+    registry.add(pageSchema(z.union([resource.schema, projection])), {
+      id: `${resource.singular}Page`,
+    });
     const input = writeRules[resource.name].input;
     registry.add(input, { id: `${resource.singular}Create` });
     registry.add(input.partial(), { id: `${resource.singular}Patch` });
@@ -92,10 +255,14 @@ function resourcePaths(): Record<string, Record<string, Operation>> {
     paths[`/v1/${resource.name}`] = {
       get: {
         operationId: `list${capitalize(resource.name)}`,
-        summary: `List ${resource.name}, offset pagination`,
-        parameters: pageParameters,
+        summary: `List ${resource.name} with search, filters, sort and offset, page or cursor pagination`,
+        parameters: listParameters(resource),
         responses: {
-          "200": jsonResponse(`One page of ${resource.name}`, `${resource.singular}Page`),
+          "200": jsonResponse(
+            `One page of ${resource.name}`,
+            `${resource.singular}Page`,
+            linkHeader,
+          ),
           "400": badQuery,
           default: unexpected,
         },
@@ -120,9 +287,9 @@ function resourcePaths(): Record<string, Record<string, Operation>> {
       get: {
         operationId: `get${resource.singular}`,
         summary: `Read one ${noun}`,
-        parameters: [idParameter],
+        parameters: [idParameter, ...readParameters(resource)],
         responses: {
-          "200": jsonResponse(`The ${noun}`, resource.singular),
+          "200": jsonResponse(`The ${noun}, projected or expanded when asked`, view(resource)),
           "400": problemResponse("Any query parameter"),
           "404": missing,
           default: unexpected,
@@ -174,10 +341,10 @@ function resourcePaths(): Record<string, Record<string, Operation>> {
       paths[`/v1/${resource.name}/{id}/${name}`] = {
         get: {
           operationId: `list${resource.singular}${capitalize(name)}`,
-          summary: `List the ${name} of one ${noun}, offset pagination`,
-          parameters: [idParameter, ...pageParameters],
+          summary: `List the ${name} of one ${noun} with the same query rules as ${child.name}`,
+          parameters: [idParameter, ...listParameters(child)],
           responses: {
-            "200": jsonResponse(`One page of ${name}`, `${child.singular}Page`),
+            "200": jsonResponse(`One page of ${name}`, `${child.singular}Page`, linkHeader),
             "400": badQuery,
             "404": missing,
             default: unexpected,
@@ -187,6 +354,17 @@ function resourcePaths(): Record<string, Record<string, Operation>> {
     }
   }
   return paths;
+}
+
+// fields= keeps a subset and expand= adds related records, so every field is optional here
+function projectionSchema(resource: Resource) {
+  const expansions = Object.fromEntries(
+    Object.entries(resource.expansions).map(([name, reference]) => [
+      name,
+      resourceNamed(reference.resource).schema.nullable().optional(),
+    ]),
+  );
+  return resource.schema.partial().extend(expansions);
 }
 
 function body(schema: string) {

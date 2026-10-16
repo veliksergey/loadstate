@@ -36,6 +36,24 @@ try {
   assert.ok(meta.total > 2 && meta.hasMore);
   assert.ok(data[0].avatar.url.startsWith(`${base}/img/avatar/`));
 
+  const cursorPage = await fetch(
+    `${base}/v1/products?pagination=cursor&limit=2&sort=-priceMinor&fields=id,priceMinor`,
+  );
+  assert.equal(cursorPage.status, 200);
+  assert.ok(cursorPage.headers.get("link").includes(`<${base}/v1/products?`));
+  const firstPage = await cursorPage.json();
+  assert.deepEqual(Object.keys(firstPage.data[0]), ["id", "priceMinor"]);
+  assert.ok(firstPage.data[0].priceMinor >= firstPage.data[1].priceMinor);
+  const secondPage = await fetch(
+    `${base}/v1/products?limit=2&sort=-priceMinor&fields=id,priceMinor&cursor=${firstPage.meta.nextCursor}`,
+  );
+  assert.equal(secondPage.status, 200);
+  assert.ok((await secondPage.json()).data[0].priceMinor <= firstPage.data[1].priceMinor);
+
+  const expanded = await (await fetch(`${base}/v1/posts/1?expand=author`)).json();
+  assert.equal(expanded.author.id, expanded.userId);
+  assert.ok(expanded.author.avatar.url.startsWith(`${base}/img/avatar/`));
+
   const nested = await fetch(`${base}/v1/categories/2/products?limit=1`);
   assert.equal(nested.status, 200);
   assert.equal((await nested.json()).data[0].categoryId, 2);

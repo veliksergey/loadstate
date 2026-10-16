@@ -29,15 +29,20 @@ The server listens on `127.0.0.1` only.
 |---|---|
 | `GET /healthz` | `{ "status": "ok" }` |
 | `GET /readyz` | `{ "status": "ready" }` |
-| `GET /v1/:resource?limit=20&offset=0` | `{ data, meta }` list of `users`, `posts`, `comments`, `categories`, `products` or `todos`; `limit` 1 to 100 |
-| `GET /v1/:resource/:id` | One record, or 404 |
-| `GET /v1/users/:id/posts` | A nested list; also `users/:id/comments`, `users/:id/todos`, `posts/:id/comments`, `comments/:id/replies`, `categories/:id/products` and `categories/:id/children` |
+| `GET /v1/:resource` | `{ data, meta }` list of `users`, `posts`, `comments`, `categories`, `products` or `todos`, with a `Link` header. Offset (`limit`, `offset`), page (`page`, `perPage`) or cursor (`pagination=cursor`, then `cursor`) pagination; `q` search; filters such as `status=active` or `priceMinor_gte=1000`; `sort=-createdAt,title`; `fields` and `expand` |
+| `GET /v1/:resource/:id` | One record, or 404; `fields` and `expand` apply |
+| `GET /v1/users/:id/posts` | A nested list with the same query rules; also `users/:id/comments`, `users/:id/todos`, `posts/:id/comments`, `comments/:id/replies`, `categories/:id/products` and `categories/:id/children` |
 | `POST /v1/:resource` | Validates the body and answers 201 with `Location` and the record, server defaults filled in |
 | `PUT /v1/:resource/:id` | Replaces the writable fields; omitted optional fields return to their defaults |
 | `PATCH /v1/:resource/:id` | Changes only the fields sent |
 | `DELETE /v1/:resource/:id` | 204 with no body, or 409 while other records refer to it |
 
-The Node server is stateless: a write is validated and answered but not stored, and every `/v1` response carries `X-Mock-State: stateless`. `HEAD` mirrors `GET`, and other methods get 405 with `Allow`. Invalid input, unknown routes and server failures return RFC 9457 Problem Details. `docs/API-SPEC.md` lists the writable fields, defaults, derived fields and structural rules of each resource.
+The Node server is stateless: a write is validated and answered but not stored, and every `/v1` response carries `X-Mock-State: stateless`. `HEAD` mirrors `GET`, and other methods get 405 with `Allow`. Invalid input, unknown routes and server failures return RFC 9457 Problem Details. `docs/API-SPEC.md` lists each resource's search fields, filters, sort fields and expansions, and its writable fields, defaults, derived fields and structural rules.
+
+```text
+GET /v1/products?q=lamp&status=active&priceMinor_gte=1000&sort=-priceMinor&fields=id,title,priceMinor
+GET /v1/posts?pagination=cursor&limit=10&sort=-publishedAt&expand=author
+```
 
 ## Use in tests
 

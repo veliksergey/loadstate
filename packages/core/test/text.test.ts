@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { excerptFrom } from "../src/text.js";
+import { excerptFrom, fold } from "../src/text.js";
+
+describe("fold", () => {
+  it.each([
+    ["Zoë", "zoe"],
+    ["ÅNGSTRÖM", "angstrom"],
+    ["Zoe\u1AB0", "zoe"],
+    ["Ｆｕｌｌ", "full"],
+    ["ﬁ", "fi"],
+  ])("folds %j to %j", (text, folded) => {
+    expect(fold(text)).toBe(folded);
+  });
+});
 
 describe("excerptFrom", () => {
   it("drops Markdown markers and list bullets", () => {

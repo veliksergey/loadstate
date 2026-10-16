@@ -19,7 +19,7 @@ const options: EngineOptions = {
 const userCount = corePack.data.users.length;
 const nextId = userCount + 1;
 const newUser = { name: "Ines Duarte", username: "ines.duarte", email: "ines.duarte@example.com" };
-const observedHeaders = ["content-type", "location", "x-mock-state", "allow"];
+const observedHeaders = ["content-type", "location", "x-mock-state", "allow", "link"];
 
 function init(method: string, json?: unknown): RequestInit {
   return json === undefined
@@ -32,12 +32,17 @@ async function observe(response: Response, base: string) {
   const text = (await response.text()).replaceAll(base, "<base>");
   return {
     status: response.status,
-    headers: Object.fromEntries(observedHeaders.map((name) => [name, response.headers.get(name)])),
+    headers: Object.fromEntries(
+      observedHeaders.map((name) => [
+        name,
+        response.headers.get(name)?.replaceAll(base, "<base>") ?? null,
+      ]),
+    ),
     body: text === "" ? null : JSON.parse(text),
   };
 }
 
-// one workflow: list, create, retry through failures, validate, write, delete, reset
+// one workflow: list, create, retry through failures, validate, write, delete, query, reset
 async function runScenario(engine: Engine, base: string, send: Send) {
   const results: Awaited<ReturnType<typeof observe>>[] = [];
   const step = async (method: string, path: string, json?: unknown) => {
@@ -62,6 +67,13 @@ async function runScenario(engine: Engine, base: string, send: Send) {
   await step("HEAD", "/v1/nope");
   await step("GET", "/v1/products/1");
   await step("GET", "/v1/categories/2/products?limit=3");
+  await step("GET", "/v1/products?page=2&perPage=5&sort=-priceMinor");
+  await step("GET", "/v1/posts?pagination=cursor&limit=3&sort=title&q=a");
+  const cursor = results.at(-1)?.body.meta.nextCursor;
+  await step("GET", `/v1/posts?sort=title&q=a&limit=3&cursor=${cursor}`);
+  await step("GET", "/v1/comments/1?fields=id,body&expand=author,post");
+  await step("GET", "/v1/users/1/posts?fields=id,title&status=published");
+  await step("GET", "/v1/products?status=nope");
   engine.reset();
   await step("GET", `/v1/users/${nextId}`);
   await step("GET", `/v1/users/${nextId}`);
@@ -124,8 +136,8 @@ describe("adapter parity", () => {
     const msw = await throughMsw();
 
     expect(reference.map((result) => result.status)).toEqual([
-      200, 201, 503, 503, 200, 200, 422, 200, 200, 409, 409, 204, 404, 405, 404, 404, 200, 200, 503,
-      503, 404, 200,
+      200, 201, 503, 503, 200, 200, 422, 200, 200, 409, 409, 204, 404, 405, 404, 404, 200, 200, 200,
+      200, 200, 200, 200, 400, 503, 503, 404, 200,
     ]);
     expect(reference[1]?.headers.location).toBe(`/v1/users/${nextId}`);
     expect(reference[4]?.body).toEqual(reference[1]?.body);
@@ -147,7 +159,21 @@ describe("adapter parity", () => {
       images: [{ url: expect.stringMatching(/^<base>\/img\//) }],
     });
     expect(reference[17]?.body).toMatchObject({ meta: { limit: 3 } });
-    expect(reference[21]?.body).toMatchObject({ meta: { total: userCount } });
+    expect(reference[18]?.body).toMatchObject({ meta: { page: 2, perPage: 5 } });
+    expect(reference[18]?.headers.link).toContain(
+      '<<base>/v1/products?sort=-priceMinor&page=1&perPage=5>; rel="first"',
+    );
+    expect(reference[19]?.body).toMatchObject({ meta: { prevCursor: null, hasMore: true } });
+    expect(reference[20]?.body).toMatchObject({ meta: { prevCursor: expect.any(String) } });
+    expect(reference[21]?.body).toMatchObject({
+      id: 1,
+      author: { avatar: { url: expect.stringMatching(/^<base>\/img\//) } },
+      post: { id: expect.any(Number) },
+    });
+    expect(Object.keys(reference[21]?.body as object)).toEqual(["id", "body", "author", "post"]);
+    expect(reference[22]?.body).toMatchObject({ data: expect.any(Array) });
+    expect(reference[23]?.body).toMatchObject({ code: "invalid_query" });
+    expect(reference[27]?.body).toMatchObject({ meta: { total: userCount } });
     for (const result of reference) expect(result.headers["x-mock-state"]).toBe("memory");
 
     expect(http).toEqual(reference);
