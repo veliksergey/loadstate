@@ -431,9 +431,11 @@ These are optional clarifications for refining the plan, not blockers to documen
 |---|---|---|
 | First-release emphasis | Portfolio-first: the M1a public demo ships before the M1b testing core | Balanced or testing-first merges M1a and M1b into one longer first release |
 | Hosting budget | Workers free tier plus a domain of roughly $10–12/year; paid Workers at $5/month as fallback | A VM at $5–7/month simplifies stateful self-hosting; AWS Lambda is cost-comparable but has no hard spending cap |
-| Pagination mode selection (M0) | Infer the mode from `page` or `cursor` presence, with `pagination=` as an explicit override | Explicit-only is stricter but makes the first cursor request longer to type |
-| Control prefix (M0) | `_mock.*` as drafted | A plain `_delay`-style prefix avoids dotted keys that some client libraries nest; decide before the first public URL |
+| Pagination mode selection (M0) | Infer the mode from `page` or `cursor` presence, with `pagination=` as an explicit override. **Adopted provisionally on 2026-10-15** when M1a started without an answer. | Explicit-only is stricter but makes the first cursor request longer to type |
+| Control prefix (M0) | `_mock.*` as drafted. **Adopted provisionally on 2026-10-15.** | A plain `_delay`-style prefix avoids dotted keys that some client libraries nest; decide before the first public URL |
+| Package shape | One published `loadstate` package with subpaths. **Adopted provisionally on 2026-10-15.** | A `@loadstate/*` scope splits installs; scope ownership on npm is unverified |
 | Public writes | Stateless anonymous demo; stateful local runs immediately | Hosted private CRUD adds credentials, cleanup, storage and abuse-management work |
+| Memory writes in M1a | A memory engine stores every validated write from M1a step 2, with restrictive deletes, because the stateless path already builds the stored record. M1b still owns isolated runs, scoped reset, the journal and race tests. **Adopted on 2026-10-15.** | Holding stored writes until M1b would need a second, stateless-only write path |
 | GraphQL timing | M2, before stable v1.0 | Requiring GraphQL in the initial preview expands first-release validation and documentation |
 | Playground framework | React with a static site build | Angular/Vue are viable; choose the stack you want to maintain and demonstrate |
 | License | MIT | Apache-2.0 is a reasonable alternative; choose before distribution |

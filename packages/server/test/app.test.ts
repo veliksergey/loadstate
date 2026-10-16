@@ -1,8 +1,10 @@
-import { createEngine, pageSchema, userSchema } from "@loadstate/core";
+import { corePack, createEngine, pageSchema, userSchema } from "@loadstate/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, maxBodyBytes } from "../src/app.js";
 
 const app = createApp();
+const userCount = corePack.data.users.length;
+const nextId = userCount + 1;
 const userPage = pageSchema(userSchema);
 
 async function get(path: string) {
@@ -35,14 +37,14 @@ describe("GET /v1/users", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toMatch(/^application\/json/);
     const page = userPage.parse(body);
-    expect(page.meta).toEqual({ limit: 20, offset: 0, total: 25, hasMore: true });
+    expect(page.meta).toEqual({ limit: 20, offset: 0, total: userCount, hasMore: true });
     expect(page.data.map((user) => user.id)).toEqual(Array.from({ length: 20 }, (_, i) => i + 1));
   });
 
   it("honors limit and offset", async () => {
     const page = userPage.parse((await get("/v1/users?limit=10&offset=20")).body);
-    expect(page.data.map((user) => user.id)).toEqual([21, 22, 23, 24, 25]);
-    expect(page.meta).toEqual({ limit: 10, offset: 20, total: 25, hasMore: false });
+    expect(page.data.map((user) => user.id)).toEqual([21, 22, 23, 24, 25, 26, 27, 28, 29, 30]);
+    expect(page.meta).toEqual({ limit: 10, offset: 20, total: userCount, hasMore: false });
   });
 
   it("rejects an invalid query as Problem Details", async () => {
@@ -117,14 +119,14 @@ describe("engine routes", () => {
     const created = await postJson(stateless, JSON.stringify(newUser));
     expect(created.status).toBe(201);
     expect(created.headers.get("x-mock-state")).toBe("stateless");
-    expect(created.headers.get("location")).toBe("/v1/users/26");
-    expect((await stateless.request("/v1/users/26")).status).toBe(404);
+    expect(created.headers.get("location")).toBe(`/v1/users/${nextId}`);
+    expect((await stateless.request(`/v1/users/${nextId}`)).status).toBe(404);
   });
 
   it("stores creates in an injected memory engine", async () => {
     const stateful = createApp({ engine: createEngine({ state: "memory" }) });
     const created = await postJson(stateful, JSON.stringify(newUser));
-    const read = await stateful.request("/v1/users/26");
+    const read = await stateful.request(`/v1/users/${nextId}`);
     expect(read.status).toBe(200);
     expect(read.headers.get("x-mock-state")).toBe("memory");
     expect(await read.json()).toEqual(await created.json());
@@ -138,10 +140,45 @@ describe("engine routes", () => {
   });
 
   it("returns 405 with the allowed methods", async () => {
-    const response = await app.request("/v1/users/1", { method: "DELETE" });
+    const response = await app.request("/v1/users/1", { method: "POST" });
     expect(response.status).toBe(405);
-    expect(response.headers.get("allow")).toBe("GET, HEAD");
+    expect(response.headers.get("allow")).toBe("GET, HEAD, PUT, PATCH, DELETE");
     expect(response.headers.get("content-type")).toBe("application/problem+json");
+  });
+
+  it("passes PUT, PATCH and DELETE bodies through to the engine", async () => {
+    const stateful = createApp({ engine: createEngine({ state: "memory" }) });
+    const send = (method: string, path: string, json?: unknown) =>
+      stateful.request(path, {
+        method,
+        ...(json === undefined
+          ? {}
+          : { headers: { "content-type": "application/json" }, body: JSON.stringify(json) }),
+      });
+
+    const patched = await send("PATCH", "/v1/users/1", { name: "Changed Name" });
+    expect(patched.status).toBe(200);
+    expect(await (await stateful.request("/v1/users/1")).json()).toMatchObject({
+      name: "Changed Name",
+    });
+
+    const replaced = await send("PUT", "/v1/todos/1", { userId: 1, title: "Replaced" });
+    expect(replaced.status).toBe(200);
+    expect(await replaced.json()).toMatchObject({ title: "Replaced", priority: "normal" });
+
+    const removed = await send("DELETE", "/v1/todos/1");
+    expect(removed.status).toBe(204);
+    expect(removed.headers.get("content-type")).toBeNull();
+    expect(removed.headers.get("x-mock-state")).toBe("memory");
+    expect(await removed.text()).toBe("");
+    expect((await send("DELETE", "/v1/todos/1")).status).toBe(404);
+  });
+
+  it("stores nothing from writes in the default stateless engine", async () => {
+    const response = await app.request("/v1/todos/1", { method: "DELETE" });
+    expect(response.status).toBe(204);
+    expect(response.headers.get("x-mock-state")).toBe("stateless");
+    expect((await app.request("/v1/todos/1")).status).toBe(200);
   });
 
   it("keeps health checks outside the engine", async () => {

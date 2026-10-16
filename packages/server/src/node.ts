@@ -9,6 +9,7 @@ export interface StartOptions {
   port?: number;
   hostname?: string;
   engine?: Engine;
+  publicUrl?: string;
 }
 
 export interface RunningServer {
@@ -20,6 +21,7 @@ export function startServer({
   port = defaultPort,
   hostname = "127.0.0.1",
   engine,
+  publicUrl,
 }: StartOptions = {}): Promise<RunningServer> {
   return new Promise((resolve, reject) => {
     const onListening = (info: AddressInfo) => {
@@ -33,7 +35,12 @@ export function startServer({
     };
     // keep Node's own Request and Response globals for tests and interceptors
     const server = serve(
-      { fetch: createApp({ engine }).fetch, port, hostname, overrideGlobalObjects: false },
+      {
+        fetch: createApp({ engine, publicUrl }).fetch,
+        port,
+        hostname,
+        overrideGlobalObjects: false,
+      },
       onListening,
     );
     server.once("error", reject);

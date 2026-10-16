@@ -26,6 +26,7 @@ export function createHandlers(engine: Engine, { baseUrl }: HandlerOptions) {
             query: url.searchParams,
             contentType: request.headers.get("content-type") ?? undefined,
             body: await request.text(),
+            baseUrl: `${base.origin}${prefix}`,
           }),
         );
         return new Response(body, { status, headers });

@@ -1,6 +1,6 @@
 # API spec: M1 surface
 
-Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). Nothing here exists yet. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
+Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 and 2 implement the resources, the REST routes and the write rules below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
 
 `api.loadstate.example` is a placeholder until the name and domain are chosen.
 
@@ -23,20 +23,22 @@ GET  /img/avatar/jane-doe?size=96                    initials avatar
 
 ## Resources (M1a packs)
 
-Counts are fixture-manifest metadata, not promises; the initial targets are tens of users and categories and hundreds of posts, comments, products and todos. Every record has an integer `id` and UTC ISO 8601 `createdAt` and `updatedAt`. Date-only fields are `YYYY-MM-DD` strings. Money is an integer in minor units plus an ISO 4217 `currency`; this differs from familiar sample APIs on purpose, so formatting code is exercised instead of string concatenation.
+Counts are fixture-manifest metadata, not promises. The `core@1` pack generated in M1a step 1 holds 30 users, 120 posts, 360 comments, 12 categories (4 top-level, each with 2 children), 96 products and 150 todos, generated with Faker 10.6.0 from a fixed seed and reference time `2026-01-01T00:00:00.000Z`. `packages/core/src/contracts.ts` is the authoritative field list; this table summarizes it. Every record has an integer `id` and UTC ISO 8601 `createdAt` and `updatedAt`. Date-only fields are `YYYY-MM-DD` strings. Money is an integer in minor units plus an ISO 4217 `currency`; this differs from familiar sample APIs on purpose, so formatting code is exercised instead of string concatenation.
 
 | Resource | Relations | Notable fields |
 |---|---|---|
-| `users` | `posts`, `comments`, `todos` | `name`, `username`, `email`, `avatar` (image object), `role` (`admin`, `editor`, `viewer`), `status` (`active`, `invited`, `disabled`), `address`, `company`, `locale`, `timezone` |
-| `posts` | `author` (user), `comments` | `title`, `slug`, `excerpt`, `body` (Markdown), `cover` (image object), `tags[]`, `readingTimeMinutes`, `status` (`draft`, `published`, `archived`), `publishedAt` (nullable) |
-| `comments` | `post`, `user` | `body`, `likes`, `parentId` (nullable, one level) |
-| `products` | `category` | `title`, `slug`, `description`, `priceMinor`, `currency`, `rating` (0–5, one decimal), `ratingCount`, `stock` (0 allowed), `brand`, `images[]`, `status` (`active`, `draft`, `discontinued`) |
-| `categories` | `products`, `parent` (nullable) | `name`, `slug`, `parentId`, `image` |
-| `todos` | `user` | `title`, `completed`, `dueDate` (date-only, nullable), `priority` (`low`, `normal`, `high`) |
+| `users` | `posts`, `comments`, `todos` | `name`, `username` (lowercase letters, digits, `.`, `_`, `-`), `email`, `avatar` (image object), `role` (`admin`, `editor`, `viewer`), `status` (`active`, `invited`, `disabled`), `address` (nullable object with `street`, `city`, `postalCode`, ISO `country`), `company` (nullable), `locale`, `timezone` |
+| `posts` | `comments` | `userId`, `title`, `slug`, `excerpt`, `body` (Markdown), `cover` (image object), `tags[]`, `readingTimeMinutes`, `status` (`draft`, `published`, `archived`), `publishedAt` (null for drafts) |
+| `comments` | `replies` | `postId`, `userId`, `parentId` (nullable, one level), `body`, `likes` |
+| `products` | none | `categoryId`, `title`, `slug`, `description`, `priceMinor`, `currency`, `rating` (0–5, one decimal, 0 when unrated), `ratingCount`, `stock` (0 allowed), `brand`, `images[]`, `status` (`active`, `draft`, `discontinued`) |
+| `categories` | `products`, `children` | `parentId` (nullable; categories are one level deep and products sit in child categories), `name`, `slug`, `image` |
+| `todos` | none | `userId`, `title`, `completed`, `dueDate` (date-only, nullable, may fall after the reference time), `priority` (`low`, `normal`, `high`) |
+
+A relation is read as a nested list with the same pagination rules: `/v1/users/7/posts`, `/v1/comments/3/replies`, `/v1/categories/1/children`. The nested list of a missing parent is 404.
 
 Valid edge packs include records with omitted optional fields, explicit nulls, empty strings, zero stock, long text, Unicode and RTL names, duplicate display names, date boundaries and missing optional relations. Fault packs with malformed or invalid records are separately labeled and arrive in M1b.
 
-Every image field is an object. Blur metadata is optional and documented when added.
+Every image field is an object. Fixtures store its `url` as a path under `/img`; responses make it absolute with the base URL of the request, so the same data works on every host. The Node server uses its configured `publicUrl` or the request origin, the Worker uses the hostname Cloudflare routed the request to, and the MSW adapter uses its `baseUrl`, path prefix included. The `/img` endpoint that serves these URLs arrives in M1a step 5. Blur metadata is optional and documented when added.
 
 ```json
 {
@@ -58,12 +60,62 @@ Every image field is an object. Blur metadata is optional and documented when ad
 | `POST /v1/:resource` | Validate; 201, `Location`, created representation; stored only in a stateful run |
 | `PUT /v1/:resource/:id` | Replace writable fields; required fields enforced; 404 for a missing target; no upsert |
 | `PATCH /v1/:resource/:id` | Merge documented writable fields; omitted fields unchanged; explicit `null` only where nullable; arrays replaced whole |
-| `DELETE /v1/:resource/:id` | 204 with no body; repeating it returns 404 |
+| `DELETE /v1/:resource/:id` | 204 with no body; in a stateful run, repeating it returns 404 |
 | `HEAD`, `OPTIONS` | Correct metadata and preflight; HEAD has no body |
 
-Unsupported methods return 405 with `Allow`. Server-owned fields (`id`, `createdAt`, `updatedAt`) in a write body are rejected with a 422 field error of code `read_only`. Foreign keys are validated. In M1b, deleting a record with dependents returns 409.
+Unsupported methods return 405 with `Allow`: `GET, HEAD, POST` on a collection and `GET, HEAD, PUT, PATCH, DELETE` on a record. A malformed id such as `007` matches no route and is 404 for every method.
 
-In stateless mode (the public demo, or `--mode stateless` locally) a successful write returns the record as it would look if saved and `X-Mock-State: stateless`; a following GET of the new id returns 404. In memory mode the write is visible to later reads in the same run.
+In stateless mode (the public demo, or `--mode stateless` locally) a successful write returns the record as it would look if saved and `X-Mock-State: stateless`; a following GET of the new id returns 404, and a deleted record is still readable. In memory mode every write is visible to later reads in the same run, and a reset restores the pack and its next ids.
+
+### Writes
+
+Each resource has one writable input contract, published in the OpenAPI document as `{Singular}Create` (POST and PUT) and `{Singular}Patch` (PATCH, every field optional). Unknown keys are rejected, so a typo never passes silently.
+
+| Resource | Required on POST and PUT | Optional, with the default used when omitted | Read-only |
+|---|---|---|---|
+| `users` | `name`, `username`, `email` | `role` `viewer`, `status` `active`, `address` `null`, `company` `null`, `locale` `en-US`, `timezone` `UTC` | `id`, `avatar`, `createdAt`, `updatedAt` |
+| `posts` | `userId`, `title`, `body` | `excerpt` (derived from `body`), `tags` `[]`, `status` `draft` | `id`, `slug`, `cover`, `readingTimeMinutes`, `publishedAt`, `createdAt`, `updatedAt` |
+| `comments` | `postId`, `userId`, `body` | `parentId` `null` | `id`, `likes`, `createdAt`, `updatedAt` |
+| `categories` | `name` | `parentId` `null` | `id`, `slug`, `image`, `createdAt`, `updatedAt` |
+| `products` | `categoryId`, `title`, `description`, `priceMinor`, `brand` | `currency` `USD`, `stock` `0`, `status` `draft` | `id`, `slug`, `images`, `rating`, `ratingCount`, `createdAt`, `updatedAt` |
+| `todos` | `userId`, `title` | `completed` `false`, `dueDate` `null`, `priority` `normal` | `id`, `createdAt`, `updatedAt` |
+
+- **PUT replaces.** It takes the same body as POST, and an omitted optional field returns to its default. There is no upsert: a missing target is 404, checked before the body is read.
+- **PATCH merges.** Omitted fields keep their stored values. `null` is accepted only for nullable fields (`address`, `company`, `parentId`, `dueDate`). Arrays and nested objects such as `tags` and `address` are replaced whole. An empty object only advances `updatedAt`.
+- **Read-only fields are named.** Sending one is a 422 field error with code `read_only`; any other unknown key has code `unknown_field`.
+
+The server derives the rest from the inputs. `createdAt` is kept on PUT and PATCH, and `updatedAt` takes the server clock on every write.
+
+| Field | Rule |
+|---|---|
+| Post and product `slug` | The title in lowercase ASCII with dashes, then `-{id}`; `post-{id}` or `product-{id}` when nothing is left |
+| Category `slug` | Kept while the name stays the same; otherwise the name the same way, or `category` when nothing is left, and while another category has that slug, `-{id}` is appended |
+| Post `excerpt` | When omitted on POST or PUT, the start of the body as plain text, at most 160 characters plus an ellipsis; the title when the body has no text |
+| Post `readingTimeMinutes` | Words in the body, ignoring surrounding whitespace, divided by 200, rounded up, at least 1 |
+| Post `publishedAt` | Set to the write time when a post leaves `draft`, kept while it stays `published` or `archived`, cleared when it returns to `draft` |
+| User `avatar` | `/img/avatar/{username}?size=96`; its `alt` follows `name` |
+| Post `cover`, category `image`, product `images` | A seeded `/img` placeholder on create, kept on later writes; the `alt` text follows the title or name |
+| Comment `likes`, product `rating` and `ratingCount` | 0 on create, kept on later writes |
+
+Writes keep the pack's structure. A reference to a missing record is a 422 field error with code `invalid_reference`; each rule below is a 422 field error with the code shown.
+
+| Rule | Code |
+|---|---|
+| A comment's post is published or archived | `not_published` on `postId` |
+| A post with comments cannot return to draft | `has_comments` on `status` |
+| A reply's parent is a top-level comment | `nested_reply` on `parentId` |
+| A reply's parent is on the same post | `other_post` on `parentId` |
+| A comment cannot reply to itself | `self_reference` on `parentId` |
+| A comment with replies stays top-level and on its post | `has_replies` on `parentId` or `postId` |
+| A category's parent is a top-level category | `nested_category` on `parentId` |
+| A category cannot be its own parent | `self_reference` on `parentId` |
+| A category with subcategories stays top-level | `has_children` on `parentId` |
+| A category with products keeps its parent | `has_products` on `parentId` |
+| A product sits in a subcategory | `not_subcategory` on `categoryId` |
+
+Conflicts are 409. A `username` or `email` already used by another user, with email compared case-insensitively, answers `conflict` with an `already_used` field error per field. Deletes never cascade: deleting a user with posts, comments or todos, a post with comments, a comment with replies, or a category with products or subcategories answers `has_dependents`, and the detail names each relation and its count.
+
+Checks run in a fixed order, and the first failing step answers: route and method (404, 405), query string (400), target record (404), media type (415), JSON syntax (400), fields (422), references and structure (422), then conflicts (409).
 
 ## Query parameters
 

@@ -12,10 +12,13 @@ export { maxBodyBytes };
 
 export interface AppOptions {
   engine?: Engine | undefined;
+  // absolute base for image URLs; defaults to each request's origin
+  publicUrl?: string | undefined;
 }
 
 export function createApp({
   engine = createEngine({ state: "stateless" }),
+  publicUrl,
 }: AppOptions = {}): Hono {
   const app = new Hono();
 
@@ -37,6 +40,7 @@ export function createApp({
         query: url.searchParams,
         contentType: c.req.header("content-type"),
         body,
+        baseUrl: publicUrl ?? url.origin,
       }),
     );
   });

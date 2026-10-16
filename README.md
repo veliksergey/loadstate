@@ -8,7 +8,7 @@ Live demo, stateless: https://loadstate.veliksergey.workers.dev/v1/users?limit=2
 
 ## Requirements
 
-- Node.js 22.12 or later; 24 is the reference version.
+- Node.js 22.13 or later; 24 is the reference version.
 - pnpm 12.11.2, pinned in `package.json` through `packageManager`.
 
 ## Development
@@ -20,6 +20,7 @@ pnpm smoke:pack                              # pack and use the packages from a 
 pnpm smoke:worker                            # run the Workers entry under local Wrangler
 pnpm --filter @loadstate/server start        # after a build; PORT defaults to 4000
 pnpm --filter @loadstate/server dev:worker   # the Workers entry, locally
+pnpm --filter @loadstate/core fixtures:generate   # regenerate the fixture pack
 ```
 
 The server listens on `127.0.0.1` only.
@@ -28,15 +29,19 @@ The server listens on `127.0.0.1` only.
 |---|---|
 | `GET /healthz` | `{ "status": "ok" }` |
 | `GET /readyz` | `{ "status": "ready" }` |
-| `GET /v1/users?limit=20&offset=0` | `{ data, meta }` list; `limit` 1 to 100 |
-| `GET /v1/users/:id` | One user, or 404 |
-| `POST /v1/users` | Validates `{ name, username, email }` and answers 201 with `Location` |
+| `GET /v1/:resource?limit=20&offset=0` | `{ data, meta }` list of `users`, `posts`, `comments`, `categories`, `products` or `todos`; `limit` 1 to 100 |
+| `GET /v1/:resource/:id` | One record, or 404 |
+| `GET /v1/users/:id/posts` | A nested list; also `users/:id/comments`, `users/:id/todos`, `posts/:id/comments`, `comments/:id/replies`, `categories/:id/products` and `categories/:id/children` |
+| `POST /v1/:resource` | Validates the body and answers 201 with `Location` and the record, server defaults filled in |
+| `PUT /v1/:resource/:id` | Replaces the writable fields; omitted optional fields return to their defaults |
+| `PATCH /v1/:resource/:id` | Changes only the fields sent |
+| `DELETE /v1/:resource/:id` | 204 with no body, or 409 while other records refer to it |
 
-The Node server is stateless: a create is validated and answered but not stored, and every `/v1` response carries `X-Mock-State: stateless`. `HEAD` mirrors `GET`, and other methods get 405 with `Allow`. Invalid input, unknown routes and server failures return RFC 9457 Problem Details.
+The Node server is stateless: a write is validated and answered but not stored, and every `/v1` response carries `X-Mock-State: stateless`. `HEAD` mirrors `GET`, and other methods get 405 with `Allow`. Invalid input, unknown routes and server failures return RFC 9457 Problem Details. `docs/API-SPEC.md` lists the writable fields, defaults, derived fields and structural rules of each resource.
 
 ## Use in tests
 
-An engine created with `state: "memory"` stores creates until `reset()`, and can return scripted failures before normal responses. The same engine runs in-process, behind the Node server, or inside MSW:
+An engine created with `state: "memory"` stores every write until `reset()`, and can return scripted failures before normal responses. The same engine runs in-process, behind the Node server, or inside MSW:
 
 ```ts
 import { createEngine } from "@loadstate/core";

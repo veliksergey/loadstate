@@ -35,7 +35,8 @@ function readTarball(file) {
 function checkTarball(name) {
   const file = join(work, `loadstate-${name}-0.0.0.tgz`);
   const files = readTarball(file);
-  const compiled = readdirSync(join(root, "packages", name, "src"))
+  const compiled = readdirSync(join(root, "packages", name, "src"), { recursive: true })
+    .map((source) => String(source).replaceAll("\\", "/"))
     .filter((source) => source.endsWith(".ts"))
     .flatMap((source) => {
       const base = source.slice(0, -".ts".length);
@@ -66,10 +67,24 @@ const post = { method: "POST", headers: { "content-type": "application/json" }, 
 
 const server = await startServer({ port: 0, engine: createEngine({ state: "memory" }) });
 try {
-  assert.equal((await fetch(server.url + "/v1/users", post)).status, 201);
-  const read = await fetch(server.url + "/v1/users/26");
+  const created = await fetch(server.url + "/v1/users", post);
+  assert.equal(created.status, 201);
+  const location = server.url + created.headers.get("location");
+  const read = await fetch(location);
   assert.equal(read.status, 200);
-  assert.equal((await read.json()).username, user.username);
+  const body = await read.json();
+  assert.equal(body.username, user.username);
+  assert.ok(body.avatar.url.startsWith(server.url + "/img/avatar/"));
+
+  const patched = await fetch(location, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ role: "editor" }),
+  });
+  assert.equal(patched.status, 200);
+  assert.equal((await patched.json()).role, "editor");
+  assert.equal((await fetch(location, { method: "DELETE" })).status, 204);
+  assert.equal((await fetch(location)).status, 404);
 } finally {
   await server.close();
 }
@@ -78,15 +93,27 @@ const baseUrl = "http://api.smoke.test";
 const mock = setupServer(...createHandlers(createEngine({ state: "memory" }), { baseUrl }));
 mock.listen({ onUnhandledFrame: "error" });
 try {
-  assert.equal((await fetch(baseUrl + "/v1/users", post)).status, 201);
-  assert.equal((await fetch(baseUrl + "/v1/users/26")).status, 200);
+  const created = await fetch(baseUrl + "/v1/users", post);
+  assert.equal(created.status, 201);
+  assert.equal((await fetch(baseUrl + created.headers.get("location"))).status, 200);
+  const product = await (await fetch(baseUrl + "/v1/products/1")).json();
+  assert.ok(product.images[0].url.startsWith(baseUrl + "/img/"));
+
+  const replaced = await fetch(baseUrl + "/v1/todos/1", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ userId: 1, title: "Replaced" }),
+  });
+  assert.equal(replaced.status, 200);
+  assert.equal((await replaced.json()).title, "Replaced");
+  assert.equal((await fetch(baseUrl + "/v1/todos/1", { method: "DELETE" })).status, 204);
 } finally {
   mock.close();
 }
 console.log("consumer runtime check passed");
 `;
 
-const typeCheck = `import { createEngine, type Engine, type User } from "@loadstate/core";
+const typeCheck = `import { createEngine, type Engine, type PostCreate, type User } from "@loadstate/core";
 import { createHandlers } from "@loadstate/msw";
 import { type RunningServer, startServer } from "@loadstate/server";
 
@@ -94,6 +121,7 @@ const engine: Engine = createEngine({ state: "memory", sequences: { "GET /v1/use
 export const handlers = createHandlers(engine, { baseUrl: "http://api.smoke.test" });
 export const running: Promise<RunningServer> = startServer({ port: 0, engine });
 export const nobody: User | undefined = undefined;
+export const draft: PostCreate = { userId: 1, title: "Title", body: "Body" };
 
 // fails to compile if the shipped declarations resolved to any
 // @ts-expect-error a state is required

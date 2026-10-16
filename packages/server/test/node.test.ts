@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { createEngine, pageSchema, userSchema } from "@loadstate/core";
+import { corePack, createEngine, pageSchema, userSchema } from "@loadstate/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { maxBodyBytes } from "../src/app.js";
 import { parsePort, runServer, startServer } from "../src/node.js";
@@ -111,11 +111,34 @@ describe("request bodies over real HTTP", () => {
     }
   }
 
-  it.each(["DELETE", "OPTIONS"])("answers a bodiless %s with 405, not 500", async (method) => {
+  it("answers a bodiless DELETE with 204 and an empty body", async () => {
     await withServer(async (url) => {
-      const response = await fetch(`${url}/v1/users/1`, { method });
+      const response = await fetch(`${url}/v1/todos/1`, { method: "DELETE" });
+      expect(response.status).toBe(204);
+      expect(response.headers.get("content-type")).toBeNull();
+      expect(await response.text()).toBe("");
+      expect((await fetch(`${url}/v1/todos/1`)).status).toBe(404);
+    });
+  });
+
+  it("answers a bodiless OPTIONS with 405, not 500", async () => {
+    await withServer(async (url) => {
+      const response = await fetch(`${url}/v1/users/1`, { method: "OPTIONS" });
       expect(response.status).toBe(405);
-      expect(response.headers.get("allow")).toBe("GET, HEAD");
+      expect(response.headers.get("allow")).toBe("GET, HEAD, PUT, PATCH, DELETE");
+    });
+  });
+
+  it("accepts a chunked PATCH body", async () => {
+    await withServer(async (url) => {
+      const response = await fetch(`${url}/v1/users/1`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: chunked(JSON.stringify({ name: "Chunked Name" })),
+        duplex: "half",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ id: 1, name: "Chunked Name" });
     });
   });
 
@@ -128,7 +151,7 @@ describe("request bodies over real HTTP", () => {
         duplex: "half",
       });
       expect(response.status).toBe(201);
-      expect(response.headers.get("location")).toBe("/v1/users/26");
+      expect(response.headers.get("location")).toBe(`/v1/users/${corePack.data.users.length + 1}`);
     });
   });
 

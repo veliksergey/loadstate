@@ -1,4 +1,4 @@
-import { createEngine } from "@loadstate/core";
+import { corePack, createEngine } from "@loadstate/core";
 import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHandlers } from "../src/index.js";
@@ -23,7 +23,7 @@ describe("createHandlers", () => {
     expect(response.headers.get("x-mock-state")).toBe("memory");
     expect(await response.json()).toMatchObject({
       data: [{ id: 3 }],
-      meta: { limit: 1, offset: 2, total: 25, hasMore: true },
+      meta: { limit: 1, offset: 2, total: corePack.data.users.length, hasMore: true },
     });
   });
 
@@ -34,7 +34,7 @@ describe("createHandlers", () => {
       body: JSON.stringify({ name: "Ines Duarte", username: "ines", email: "ines@example.com" }),
     });
     expect(created.status).toBe(201);
-    expect(created.headers.get("location")).toBe("/v1/users/26");
+    expect(created.headers.get("location")).toBe(`/v1/users/${corePack.data.users.length + 1}`);
 
     const wrongType = await fetch("http://api.loadstate.test/api/v1/users", {
       method: "POST",
@@ -44,7 +44,7 @@ describe("createHandlers", () => {
   });
 
   it("answers unknown paths under the base path from the engine", async () => {
-    const response = await fetch("http://api.loadstate.test/api/v1/posts");
+    const response = await fetch("http://api.loadstate.test/api/v1/widgets");
     expect(response.status).toBe(404);
     expect(response.headers.get("content-type")).toBe("application/problem+json");
   });
