@@ -6,7 +6,7 @@ import {
   problem,
   serialize,
 } from "@loadstate/core";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 
 export { maxBodyBytes };
 
@@ -26,7 +26,7 @@ export function createApp({
   app.get("/healthz", (c) => c.json({ status: "ok" }));
   app.get("/readyz", (c) => c.json({ status: "ready" }));
 
-  app.all("/v1/*", async (c) => {
+  const forward = async (c: Context) => {
     const body = await readBody(c.req.raw, maxBodyBytes);
     if (body === undefined) {
       return toResponse(
@@ -46,7 +46,10 @@ export function createApp({
     // the engine plans a simulated delay; the adapter waits before sending headers
     if (response.delayMs) await wait(response.delayMs);
     return toResponse(response);
-  });
+  };
+  // the engine answers the data routes and the image fixtures alike
+  app.all("/v1/*", forward);
+  app.all("/img/*", forward);
 
   app.notFound(() => toResponse(problem(404, "not_found", "No route matches this path.")));
 

@@ -1,6 +1,6 @@
 # API spec: M1 surface
 
-Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 to 4 implement the resources, the REST routes, the write rules, the query parameters, the list responses and the simulation controls below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
+Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 to 5 implement the resources, the REST routes, the write rules, the query parameters, the list responses, the simulation controls and the images below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
 
 `api.loadstate.example` is a placeholder until the name and domain are chosen.
 
@@ -38,7 +38,7 @@ A relation is read as a nested list with the same pagination rules: `/v1/users/7
 
 The valid edge pack `edge@1` is small and written by hand: 9 users, 8 posts, 10 comments, 7 categories, 7 products and 7 todos. It holds explicit nulls, text at every maximum length, Unicode, right-to-left and emoji names and titles, titles that leave no slug text, duplicate display names, date boundaries (the epoch, a leap day, the reference time), zero and maximum prices and stock, unrated products, empty tag lists, and records without optional relations. It obeys every rule the core pack does. Select it with `_mock.fixture=edge@1`, or create an engine with `fixture: "edge@1"`. Fault packs with malformed or invalid records are separately labeled and arrive in M1b.
 
-Every image field is an object. Fixtures store its `url` as a path under `/img`; responses make it absolute with a trusted base URL, so the same data works on every host. The Node server uses its configured `publicUrl` or its own listening origin, never the client's `Host` header; the Worker uses the hostname Cloudflare routed the request to, and the MSW adapter uses its `baseUrl`, path prefix included. The `/img` endpoint that serves these URLs arrives in M1a step 5. Blur metadata is optional and documented when added.
+Every image field is an object. Fixtures store its `url` as a path under `/img`; responses make it absolute with a trusted base URL, so the same data works on every host. The Node server uses its configured `publicUrl` or its own listening origin, never the client's `Host` header; the Worker uses the hostname Cloudflare routed the request to, and the MSW adapter uses its `baseUrl`, path prefix included. The `/img` routes below serve these URLs. Blur metadata is optional and documented when added.
 
 ```json
 {
@@ -211,7 +211,7 @@ Every list response carries `Link` with `first`, `prev` and `next` where they ap
 
 Every `/v1` route accepts the controls below as query parameters or as headers. A query control wins over its header, which is then ignored. Controls are removed before the route reads its own query, and routing errors (404, 405) come first. An unknown `_mock.*` parameter or `X-Mock-*` header, a malformed or repeated value, or an incompatible combination answers 400 `invalid_controls` with one field error per problem.
 
-The host limit applies first. Explicit request controls then win over recipe defaults, and both win over the engine's configured `sequences`: a request with a simulated status does not consume a sequence step.
+The host limit applies first. Explicit request controls then win over recipe defaults, and both win over the engine's configured `sequences`: a request with a simulated status does not consume a sequence step. Every answer of a route with a configured sequence, its successes included, is `no-store`, because it depends on the run's position.
 
 | Query | Header | Values | Effect |
 |---|---|---|---|
@@ -246,14 +246,26 @@ Every response a control shaped carries `X-Mock-Applied` with the resolved contr
 | URL | Result |
 |---|---|
 | `/img/600x400` | 600×400 SVG with the size as text |
-| `/img/600` | Square |
-| `/img/600x400?text=Hero&bg=0f172a&fg=e2e8f0` | Custom text and colors; text is escaped and length-limited |
-| `/img/600x400?seed=p17&style=gradient` | Seeded `plain`, `gradient` or `pattern` so grids are not uniform gray boxes |
-| `/img/avatar/jane-doe?size=96` | Initials avatar; `style=identicon` for a pattern |
-| `/img/600x400?_mock.delay=2000` | Slow image for lazy-loading tests |
-| `/img/600x400?_mock.status=404` | Broken image for `onError` fallbacks |
+| `/img/600` | A 600×600 square |
+| `/img/600x400?text=Hero&bg=0f172a&fg=e2e8f0` | Custom text and colors |
+| `/img/600x400?seed=p17&style=gradient` | A seeded color, with `plain`, `gradient` or `pattern` so grids are not uniform gray boxes |
+| `/img/avatar/jane-doe?size=96` | A square avatar with the initials `JD`; `style=identicon` for a mirrored pattern |
+| `/img/600x400?_mock.delay=2000` | A slow image for lazy-loading tests |
+| `/img/600x400?_mock.status=404` | A broken image for `onError` fallbacks |
 
-Dimensions are 10 to 2 000 logical pixels. SVG output contains no script, foreign objects or external references. Normal images carry long-lived cache headers; delay and status variants are `no-store`. M1b adds a small licensed raster set at fixed paths such as `/img/sample/desk.jpg` for screenshot tests.
+| Parameter | Applies to | Values |
+|---|---|---|
+| `text` | placeholders | 1 to 60 characters on one line, without control characters or the Unicode line and paragraph separators; shown escaped. Default: the size, such as `600×400` |
+| `bg`, `fg` | both | 3 or 6 hex digits without `#`. Without `bg` a placeholder is light gray, or a color picked from `seed`; an avatar takes its color from the name. Without `fg` the text color contrasts with the background |
+| `seed` | placeholders | 1 to 64 letters, digits, `.`, `_` or `-`; picks the color and the pattern, so the same URL always draws the same bytes |
+| `style` | both | Placeholders: `plain` (default), `gradient`, `pattern`. Avatars: `initials` (default), `identicon` |
+| `size` | avatars | 10 to 2 000, default 96 |
+
+A side is 10 to 2 000 pixels; any other plain number, such as `/img/0` or `/img/100000`, is 400 `invalid_image` naming the side. A path that is not a size, such as `/img/abc` or `/img/0600`, is 404, and so is an avatar name with other characters than letters, digits, `.`, `_` and `-`, or longer than 64. Unknown or repeated parameters are 400. HEAD answers the headers without a body; other methods are 405.
+
+Every image URL in the fixture packs resolves: covers, category images, product photos and user avatars draw at the width and height their records state. A record's stored `color` is the pack's own placeholder metadata and need not match the drawn background.
+
+The SVG has no script, event handler, `foreignObject`, link or external reference; the only URLs are the SVG namespace and the in-document `#g` gradient. User text is XML-escaped, and output stays under 8 KiB. Responses carry `Cache-Control: public, max-age=604800`, `Vary` listing every `X-Mock-*` control header so a cache never serves an image to a request that asks for another, `X-Content-Type-Options: nosniff` and `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'`, so an image opened directly can neither run nor load anything. The simulation controls apply to images as to `/v1`: a delayed, failing or body-faulted image is `no-store`, and so is every image from a route with a configured sequence, and `_mock.body` cuts or relabels the SVG text. M1b adds a small licensed raster set at fixed paths such as `/img/sample/desk.jpg` for screenshot tests.
 
 ## Utility and discovery endpoints (M1a)
 

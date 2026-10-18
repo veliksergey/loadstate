@@ -76,6 +76,10 @@ try {
   assert.equal(body.username, user.username);
   assert.ok(body.avatar.url.startsWith(server.url + "/img/avatar/"));
 
+  const avatar = await fetch(body.avatar.url);
+  assert.equal(avatar.status, 200);
+  assert.equal(avatar.headers.get("content-type"), "image/svg+xml");
+
   const empty = await fetch(server.url + "/v1/users?_mock.scenario=empty");
   assert.equal((await empty.json()).meta.total, 0);
   assert.equal(empty.headers.get("x-mock-applied"), "scenario=empty");
@@ -131,6 +135,7 @@ const typeCheck = `import {
   parseListQuery,
   type PostCreate,
   resourceNamed,
+  renderPlaceholder,
   type ScenarioName,
   type User,
 } from "@loadstate/core";
@@ -148,6 +153,7 @@ export const parsed = parseListQuery(resourceNamed("posts"), [["sort", "-created
 });
 export const meta: ListMeta = { limit: 5, nextCursor: null, prevCursor: null, hasMore: false };
 export const scenario: ScenarioName = "retry-then-ok";
+export const svg: string = renderPlaceholder({ width: 10, height: 10, style: "plain" });
 export const onEdge: Engine = createEngine({ state: "stateless", fixture: "edge@1", maxDelayMs: 500 });
 
 // fails to compile if the shipped declarations resolved to any

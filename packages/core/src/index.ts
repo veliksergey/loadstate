@@ -64,6 +64,21 @@ export {
   type FixturePack,
   fixturePacks,
 } from "./fixtures/index.js";
+export {
+  type AvatarOptions,
+  type AvatarStyle,
+  avatarStyles,
+  maxImageSide,
+  maxImageText,
+  minImageSide,
+  type PlaceholderOptions,
+  type PlaceholderStyle,
+  parseAvatar,
+  parsePlaceholder,
+  placeholderStyles,
+  renderAvatar,
+  renderPlaceholder,
+} from "./images.js";
 export { type ListPage, listRows } from "./list.js";
 export { createOpenApiDocument, type OpenApiDocument, type OpenApiVersion } from "./openapi.js";
 export {

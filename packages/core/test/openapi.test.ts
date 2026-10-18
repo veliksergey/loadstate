@@ -217,6 +217,8 @@ describe("generated OpenAPI document", () => {
           (relation) => `GET /v1/${resource.name}/{id}/${relation}`,
         ),
       ]),
+      "GET /img/{size}",
+      "GET /img/avatar/{name}",
     ];
     expect(documented.sort()).toEqual(expected.sort());
   });
@@ -551,6 +553,29 @@ describe("engine responses against the document", () => {
       503,
     ],
     ["an invalid control", "/v1/todos", "get", get("/v1/todos", "_mock.status=418"), 400],
+    ["a placeholder image", "/img/{size}", "get", get("/img/600x400", "seed=a&style=pattern"), 200],
+    ["a square image", "/img/{size}", "get", get("/img/64"), 200],
+    ["an image side out of range", "/img/{size}", "get", get("/img/5x400"), 400],
+    ["a zero side", "/img/{size}", "get", get("/img/0"), 400],
+    ["a size that is not one", "/img/{size}", "get", get("/img/abc"), 404],
+    ["a broken image", "/img/{size}", "get", get("/img/600x400", "_mock.status=404"), 404],
+    ["a delayed image", "/img/{size}", "get", get("/img/600x400", "_mock.delay=5"), 200],
+    ["an avatar", "/img/avatar/{name}", "get", get("/img/avatar/jane-doe", "size=40"), 200],
+    [
+      "an identicon",
+      "/img/avatar/{name}",
+      "get",
+      get("/img/avatar/jane-doe", "style=identicon"),
+      200,
+    ],
+    [
+      "an invalid avatar size",
+      "/img/avatar/{name}",
+      "get",
+      get("/img/avatar/jane-doe", "size=1"),
+      400,
+    ],
+    ["an avatar name that is not one", "/img/avatar/{name}", "get", get("/img/avatar/-x"), 404],
   ];
 
   it.each(cases)(
@@ -584,7 +609,8 @@ describe("engine responses against the document", () => {
       expect(Object.keys(documented.content)).toContain(mediaType);
 
       const schema = `${urls.get("3.1.2")}#/${pointer("paths", path, method, "responses", code, "content", mediaType, "schema")}`;
-      expect(await isValid(schema, response.body)).toBe(true);
+      // an image's body is its SVG text, which the document describes as a string
+      expect(await isValid(schema, response.rawBody ?? response.body)).toBe(true);
     },
   );
 

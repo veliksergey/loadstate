@@ -192,6 +192,38 @@ describe("engine routes", () => {
   });
 });
 
+describe("images over Hono", () => {
+  it("serves placeholder and avatar SVGs with cache and safety headers", async () => {
+    const image = await app.request("/img/600x400?text=Hero");
+    expect(image.status).toBe(200);
+    expect(image.headers.get("content-type")).toBe("image/svg+xml");
+    expect(image.headers.get("cache-control")).toBe("public, max-age=604800");
+    expect(image.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(image.headers.get("content-security-policy")).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'",
+    );
+    expect(await image.text()).toContain(">Hero</text>");
+    const avatar = await app.request("/img/avatar/jane-doe?size=40");
+    expect(await avatar.text()).toContain('width="40" height="40"');
+  });
+
+  it("answers HEAD without a body and a broken image with no-store", async () => {
+    const head = await app.request("/img/64", { method: "HEAD" });
+    expect(head.headers.get("content-type")).toBe("image/svg+xml");
+    expect(await head.text()).toBe("");
+    const broken = await app.request("/img/64?_mock.status=404");
+    expect(broken.status).toBe(404);
+    expect(broken.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("serves the avatar URL a fixture user carries", async () => {
+    const [user] = corePack.data.users;
+    const response = await app.request(user?.avatar.url ?? "");
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('width="96" height="96"');
+  });
+});
+
 describe("simulation controls over Hono", () => {
   it("reads control headers and waits out a simulated delay", async () => {
     const started = Date.now();

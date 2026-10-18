@@ -70,6 +70,16 @@ try {
   assert.equal(html.headers.get("content-type"), "text/html; charset=utf-8");
   assert.ok((await html.text()).startsWith("<!doctype html>"));
 
+  // images: the URLs records carry resolve on the Worker
+  const cover = await fetch(data[0].avatar.url);
+  assert.equal(cover.status, 200);
+  assert.equal(cover.headers.get("content-type"), "image/svg+xml");
+  assert.equal(cover.headers.get("cache-control"), "public, max-age=604800");
+  assert.ok((await cover.text()).startsWith('<svg xmlns="http://www.w3.org/2000/svg" width="96"'));
+  const placeholder = await fetch(`${base}/img/600x400?text=Hero&style=gradient`);
+  assert.ok((await placeholder.text()).includes(">Hero</text>"));
+  assert.equal((await fetch(`${base}/img/600x400?_mock.status=404`)).status, 404);
+
   const nested = await fetch(`${base}/v1/categories/2/products?limit=1`);
   assert.equal(nested.status, 200);
   assert.equal((await nested.json()).data[0].categoryId, 2);

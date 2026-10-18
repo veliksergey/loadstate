@@ -31,6 +31,8 @@ The server listens on `127.0.0.1` only.
 | `GET /readyz` | `{ "status": "ready" }` |
 | `GET /v1/:resource` | `{ data, meta }` list of `users`, `posts`, `comments`, `categories`, `products` or `todos`, with a `Link` header. Offset (`limit`, `offset`), page (`page`, `perPage`) or cursor (`pagination=cursor`, then `cursor`) pagination; `q` search; filters such as `status=active` or `priceMinor_gte=1000`; `sort=-createdAt,title`; `fields` and `expand` |
 | `GET /v1/:resource/:id` | One record, or 404; `fields` and `expand` apply |
+| `GET /img/600x400`, `GET /img/600` | A placeholder SVG; `text`, `bg`, `fg`, `seed` and `style` shape it |
+| `GET /img/avatar/:name` | An initials or identicon avatar SVG; every image URL in the fixtures resolves here |
 | `GET /v1/users/:id/posts` | A nested list with the same query rules; also `users/:id/comments`, `users/:id/todos`, `posts/:id/comments`, `comments/:id/replies`, `categories/:id/products` and `categories/:id/children` |
 | `POST /v1/:resource` | Validates the body and answers 201 with `Location` and the record, server defaults filled in |
 | `PUT /v1/:resource/:id` | Replaces the writable fields; omitted optional fields return to their defaults |

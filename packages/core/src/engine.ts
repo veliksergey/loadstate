@@ -1,5 +1,6 @@
 import type { Image } from "./contracts.js";
 import {
+  controlHeaders,
   defaultMaxDelayMs,
   type Plan,
   parseControls,
@@ -8,6 +9,7 @@ import {
 } from "./controls.js";
 import { defaultFixture, type FixturePack, fixturePacks } from "./fixtures/index.js";
 import { deepFreeze } from "./freeze.js";
+import { parseAvatar, parsePlaceholder, renderAvatar, renderPlaceholder } from "./images.js";
 import { listRows } from "./list.js";
 import {
   parseListQuery,
@@ -141,6 +143,14 @@ export function createEngine({
         ),
       ),
     ]),
+    route("GET", "/img/:size", (params, request) => {
+      const parsed = parsePlaceholder(params.size ?? "", request.query ?? []);
+      return parsed.ok ? svg(renderPlaceholder(parsed.value)) : invalidImage(parsed.issues);
+    }),
+    route("GET", "/img/avatar/:name", (params, request) => {
+      const parsed = parseAvatar(params.name ?? "", request.query ?? []);
+      return parsed.ok ? svg(renderAvatar(parsed.value)) : invalidImage(parsed.issues);
+    }),
   ];
   const plan = readSequences(sequences, routes);
 
@@ -238,7 +248,11 @@ export function createEngine({
         : resolved.validation
           ? simulatedValidation(hit.route.pattern)
           : (nextFailure(key) ?? hit.route.run(hit.params, routeRequest, data));
-    return given ? applyPlan(response, resolved) : response;
+    const shaped = given ? applyPlan(response, resolved) : response;
+    // a sequenced route answers by run position, so no cache may keep any of its answers
+    return plan.has(key)
+      ? { ...shaped, headers: { ...shaped.headers, "cache-control": "no-store" } }
+      : shaped;
   }
 
   function nextFailure(key: string): EngineResponse | undefined {
@@ -507,7 +521,9 @@ function applyPlan(response: EngineResponse, plan: Plan): EngineResponse {
   };
   const shaped: EngineResponse = { ...response, headers };
   if (plan.delayMs > 0) shaped.delayMs = plan.delayMs;
-  const text = response.body === undefined ? "" : JSON.stringify(response.body);
+  // an image's body is its SVG text; a record's is its JSON
+  const text =
+    response.rawBody ?? (response.body === undefined ? "" : JSON.stringify(response.body));
   switch (plan.body) {
     case "malformed-json":
       return { ...shaped, rawBody: text.slice(0, Math.max(1, Math.floor(text.length / 2))) };
@@ -643,7 +659,30 @@ function isJson(contentType: string | undefined): boolean {
 }
 
 // a malformed id matches no route, so it is a 404 for every method
-const paramFormats: Record<string, RegExp> = { id: /^[1-9]\d*$/ };
+const paramFormats: Record<string, RegExp> = {
+  id: /^[1-9]\d*$/,
+  // any plain number is a size, so the range check can answer 400 instead of 404
+  size: /^(?:0|[1-9]\d*)(?:x(?:0|[1-9]\d*))?$/,
+  name: /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
+};
+
+// an SVG opened directly is a document on the API's origin, so it may not load or run anything
+const imageHeaders = {
+  "content-type": "image/svg+xml",
+  "cache-control": "public, max-age=604800",
+  "x-content-type-options": "nosniff",
+  "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+  // a cached image must not answer a request whose control headers ask for something else
+  vary: Object.values(controlHeaders).join(", "),
+};
+
+function svg(text: string): EngineResponse {
+  return { status: 200, headers: { ...imageHeaders }, rawBody: text };
+}
+
+function invalidImage(issues: FieldIssue[]): EngineResponse {
+  return problem(400, "invalid_image", "The image request is not valid.", issues);
+}
 
 function matchPath(pattern: string, path: string): Params | undefined {
   const want = pattern.split("/");

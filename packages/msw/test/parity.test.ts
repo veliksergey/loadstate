@@ -114,6 +114,10 @@ async function runScenario(engine: Engine, base: string, send: Send) {
   await step("GET", "/v1/users?_mock.fixture=edge@1");
   await step("POST", "/v1/users?_mock.scenario=validation-error", newUser);
   await step("GET", "/v1/users?_mock.nope=1");
+  await step("GET", "/img/600x400?seed=parity&style=pattern&text=Hi");
+  await step("HEAD", "/img/avatar/jane-doe?style=identicon");
+  await step("GET", "/img/5x400");
+  await step("GET", "/img/600?_mock.status=404");
   engine.reset();
   await step("GET", `/v1/users/${nextId}`);
   await step("GET", `/v1/users/${nextId}`);
@@ -178,7 +182,8 @@ describe("adapter parity", () => {
 
     expect(reference.map((result) => result.status)).toEqual([
       200, 201, 503, 503, 200, 200, 422, 200, 200, 409, 409, 204, 404, 405, 404, 404, 200, 200, 200,
-      200, 200, 200, 200, 400, 503, 200, 200, 200, 409, 422, 400, 503, 503, 404, 200,
+      200, 200, 200, 200, 400, 503, 200, 200, 200, 409, 422, 400, 200, 200, 400, 404, 503, 503, 404,
+      200,
     ]);
     expect(reference[1]?.headers.location).toBe(`/v1/users/${nextId}`);
     expect(reference[4]?.body).toEqual(reference[1]?.body);
@@ -226,7 +231,18 @@ describe("adapter parity", () => {
     expect(reference[28]?.body).toMatchObject({ code: "fixture_locked" });
     expect(reference[29]?.body).toMatchObject({ code: "validation_failed" });
     expect(reference[30]?.body).toMatchObject({ code: "invalid_controls" });
-    expect(reference[34]?.body).toMatchObject({ meta: { total: userCount } });
+    expect(reference[31]?.headers).toMatchObject({
+      "content-type": "image/svg+xml",
+      "cache-control": "public, max-age=604800",
+    });
+    expect(reference[31]?.body).toMatch(/^<svg /);
+    expect(reference[32]).toMatchObject({
+      body: null,
+      headers: { "content-type": "image/svg+xml" },
+    });
+    expect(reference[33]?.body).toMatchObject({ code: "invalid_image" });
+    expect(reference[34]?.headers["cache-control"]).toBe("no-store");
+    expect(reference[38]?.body).toMatchObject({ meta: { total: userCount } });
     for (const result of reference) expect(result.headers["x-mock-state"]).toBe("memory");
 
     expect(http).toEqual(reference);

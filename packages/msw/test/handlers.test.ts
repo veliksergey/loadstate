@@ -16,6 +16,22 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
+describe("images through MSW", () => {
+  it("serves image URLs under the base path", async () => {
+    const response = await fetch("http://api.loadstate.test/api/img/120x80?style=gradient");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/svg+xml");
+    expect(await response.text()).toContain('width="120" height="80"');
+  });
+
+  it("serves the image URLs that records carry", async () => {
+    const page = await (await fetch("http://api.loadstate.test/api/v1/products/1")).json();
+    const image = await fetch(page.images[0].url);
+    expect(image.status).toBe(200);
+    expect(await image.text()).toContain('width="800" height="800"');
+  });
+});
+
 describe("simulation controls through MSW", () => {
   it("reads control headers and waits out a simulated delay", async () => {
     const started = Date.now();

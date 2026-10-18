@@ -14,6 +14,14 @@ import { maxCursorLength } from "./cursor.js";
 import type { FieldKind } from "./fields.js";
 import { fixturePacks } from "./fixtures/index.js";
 import {
+  avatarStyles,
+  defaultAvatarSize,
+  maxImageSide,
+  maxImageText,
+  minImageSide,
+  placeholderStyles,
+} from "./images.js";
+import {
   cursorMetaSchema,
   offsetMetaSchema,
   pageNumberMetaSchema,
@@ -489,6 +497,124 @@ function writeResponses(singular: string, unique: readonly string[]) {
   };
 }
 
+const color = (name: string, what: string) => ({
+  name,
+  in: "query",
+  description: `${what} color as 3 or 6 hex digits without "#"`,
+  schema: { type: "string", pattern: "^([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$" },
+});
+
+const svgResponse = {
+  description: "An SVG image; text is escaped and nothing in it loads or runs",
+  headers: {
+    "X-Mock-State": mockState,
+    "X-Mock-Applied": { $ref: "#/components/headers/MockApplied" },
+    "Cache-Control": {
+      description: "Cached for a week, or no-store when a simulation control shaped the response",
+      required: true,
+      schema: { type: "string", enum: ["public, max-age=604800", "no-store"] },
+    },
+    "X-Content-Type-Options": { required: true, schema: { type: "string", const: "nosniff" } },
+    Vary: {
+      description:
+        "Every X-Mock-* control header, so a cache never reuses an image for a request that asks for another",
+      required: true,
+      schema: { type: "string" },
+    },
+    "Content-Security-Policy": {
+      required: true,
+      schema: { type: "string", const: "default-src 'none'; style-src 'unsafe-inline'" },
+    },
+  },
+  content: { "image/svg+xml": { schema: { type: "string" } } },
+};
+
+function imagePaths(): Record<string, Record<string, Operation>> {
+  const side = `${minImageSide} to ${maxImageSide} pixels`;
+  return {
+    "/img/{size}": {
+      get: {
+        operationId: "getPlaceholderImage",
+        summary: "A placeholder SVG of the given size",
+        parameters: [
+          {
+            name: "size",
+            in: "path",
+            required: true,
+            description: `WIDTHxHEIGHT or one side for a square, each ${side}`,
+            schema: { type: "string", pattern: "^(0|[1-9][0-9]*)(x(0|[1-9][0-9]*))?$" },
+          },
+          query("text", "Text to show instead of the size; one line, escaped", {
+            type: "string",
+            minLength: 1,
+            maxLength: maxImageText,
+          }),
+          color("bg", "Background"),
+          color("fg", "Text and pattern"),
+          query(
+            "seed",
+            "Picks the background color and the pattern; the same seed draws the same image",
+            {
+              type: "string",
+              pattern: "^[A-Za-z0-9._-]{1,64}$",
+            },
+          ),
+          query("style", "Background style", {
+            type: "string",
+            enum: [...placeholderStyles],
+            default: "plain",
+          }),
+        ],
+        responses: {
+          "200": svgResponse,
+          "400": problemResponse(
+            `A side outside ${side}, an invalid, repeated or unknown query parameter, or an invalid simulation control`,
+          ),
+          "404": problemResponse("A size that is not WIDTHxHEIGHT or SIDE in digits"),
+          default: unexpected,
+        },
+      },
+    },
+    "/img/avatar/{name}": {
+      get: {
+        operationId: "getAvatarImage",
+        summary: "A square avatar SVG with the name's initials or an identicon",
+        parameters: [
+          {
+            name: "name",
+            in: "path",
+            required: true,
+            description:
+              "1 to 64 letters, digits, dots, underscores or hyphens, starting with a letter or digit",
+            schema: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" },
+          },
+          query("size", `Side in pixels, ${side}`, {
+            type: "integer",
+            minimum: minImageSide,
+            maximum: maxImageSide,
+            default: defaultAvatarSize,
+          }),
+          query("style", "Initials or a mirrored identicon", {
+            type: "string",
+            enum: [...avatarStyles],
+            default: "initials",
+          }),
+          color("bg", "Background"),
+          color("fg", "Initials or identicon"),
+        ],
+        responses: {
+          "200": svgResponse,
+          "400": problemResponse(
+            "A size outside the range, an invalid, repeated or unknown query parameter, or an invalid simulation control",
+          ),
+          "404": problemResponse("A name with other characters"),
+          default: unexpected,
+        },
+      },
+    },
+  };
+}
+
 // every /v1 operation takes the controls and can answer a simulated 204
 function withControls(paths: Record<string, Record<string, Operation>>) {
   for (const operations of Object.values(paths)) {
@@ -502,7 +628,7 @@ function withControls(paths: Record<string, Record<string, Operation>>) {
 }
 
 export function createOpenApiDocument(version: OpenApiVersion): OpenApiDocument {
-  const paths = withControls(resourcePaths());
+  const paths = withControls({ ...resourcePaths(), ...imagePaths() });
 
   return {
     openapi: version,
