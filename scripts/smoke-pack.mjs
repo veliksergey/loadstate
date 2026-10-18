@@ -76,6 +76,10 @@ try {
   assert.equal(body.username, user.username);
   assert.ok(body.avatar.url.startsWith(server.url + "/img/avatar/"));
 
+  const empty = await fetch(server.url + "/v1/users?_mock.scenario=empty");
+  assert.equal((await empty.json()).meta.total, 0);
+  assert.equal(empty.headers.get("x-mock-applied"), "scenario=empty");
+
   const page = await fetch(server.url + "/v1/users?page=2&perPage=5&sort=name&fields=id,name");
   assert.equal(page.status, 200);
   const listed = await page.json();
@@ -127,6 +131,7 @@ const typeCheck = `import {
   parseListQuery,
   type PostCreate,
   resourceNamed,
+  type ScenarioName,
   type User,
 } from "@loadstate/core";
 import { createHandlers } from "@loadstate/msw";
@@ -142,6 +147,8 @@ export const parsed = parseListQuery(resourceNamed("posts"), [["sort", "-created
   pack: "core@1",
 });
 export const meta: ListMeta = { limit: 5, nextCursor: null, prevCursor: null, hasMore: false };
+export const scenario: ScenarioName = "retry-then-ok";
+export const onEdge: Engine = createEngine({ state: "stateless", fixture: "edge@1", maxDelayMs: 500 });
 
 // fails to compile if the shipped declarations resolved to any
 // @ts-expect-error a state is required

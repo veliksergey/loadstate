@@ -4,6 +4,7 @@ import {
   createEngine,
   type Engine,
   type EngineResponse,
+  fixturePacks,
   type ResourceName,
   resourceNamed,
   resources,
@@ -881,24 +882,26 @@ describe("validation messages", () => {
   });
 });
 
-describe("the pack under the write rules", () => {
+describe("the packs under the write rules", () => {
   // derived fields must match the generator, and every record must pass every check
-  it.each(resources.map((resource) => resource.name))(
-    "round-trips every %s record through PUT and an empty PATCH",
-    (name) => {
-      const engine = stateless();
-      const fields = Object.keys(writeRules[name].input.shape);
-      for (const [index, row] of rows(name).entries()) {
-        const path = `/v1/${name}/${row.id}`;
-        const own = Object.fromEntries(fields.map((field) => [field, row[field]]));
-        expect(send(engine, "PUT", path, own).body).toEqual({ ...row, updatedAt: at(2 * index) });
-        expect(send(engine, "PATCH", path, {}).body).toEqual({
-          ...row,
-          updatedAt: at(2 * index + 1),
-        });
-      }
-    },
-  );
+  it.each(
+    Object.keys(fixturePacks).flatMap((fixture) =>
+      resources.map((resource) => [fixture, resource.name] as const),
+    ),
+  )("round-trips every %s %s record through PUT and an empty PATCH", (fixture, name) => {
+    const engine = createEngine({ state: "stateless", now: clock(), fixture });
+    const fields = Object.keys(writeRules[name].input.shape);
+    const records = fixturePacks[fixture]?.data[name] as readonly Row[];
+    for (const [index, row] of records.entries()) {
+      const path = `/v1/${name}/${row.id}`;
+      const own = Object.fromEntries(fields.map((field) => [field, row[field]]));
+      expect(send(engine, "PUT", path, own).body).toEqual({ ...row, updatedAt: at(2 * index) });
+      expect(send(engine, "PATCH", path, {}).body).toEqual({
+        ...row,
+        updatedAt: at(2 * index + 1),
+      });
+    }
+  });
 });
 
 describe("memory state", () => {

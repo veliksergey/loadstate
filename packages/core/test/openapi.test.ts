@@ -13,12 +13,15 @@ import type { z } from "zod";
 import {
   categorySchema,
   commentSchema,
+  controlHeaders,
+  controlNames,
   corePack,
   createEngine,
   createOpenApiDocument,
   cursorMetaSchema,
   defaultLimit,
   type EngineRequest,
+  edgePack,
   listParameterNames,
   maxLimit,
   type OpenApiVersion,
@@ -57,6 +60,16 @@ interface Operation {
   responses: Record<string, unknown>;
 }
 const load = (version: OpenApiVersion) => createOpenApiDocument(version) as unknown as Doc;
+
+// a header object, following a $ref into components.headers
+function resolveHeader(spec: unknown): { required?: boolean } {
+  const ref = (spec as { $ref?: string }).$ref;
+  if (ref === undefined) return spec as { required?: boolean };
+  const document = createOpenApiDocument("3.1.2") as unknown as {
+    components: { headers: Record<string, { required?: boolean }> };
+  };
+  return document.components.headers[ref.replace("#/components/headers/", "")] ?? {};
+}
 
 type Row = { id: number } & Record<string, unknown>;
 const rows = (name: ResourceName) => corePack.data[name] as readonly Row[];
@@ -226,21 +239,29 @@ describe("generated OpenAPI document", () => {
       Object.keys(operation?.responses ?? {}).sort();
     const conflict = writeRules[name].unique.length > 0 ? ["409"] : [];
     const writes = ["400", ...conflict, "413", "415", "422", "default"];
-    expect(statuses(collection.post)).toEqual(["201", ...writes].sort());
-    expect(statuses(item.put)).toEqual(["200", "404", ...writes].sort());
-    expect(statuses(item.patch)).toEqual(["200", "404", ...writes].sort());
+    // 204 is the simulated no-content answer every operation documents
+    expect(statuses(collection.post)).toEqual(["201", "204", ...writes].sort());
+    expect(statuses(item.put)).toEqual(["200", "204", "404", ...writes].sort());
+    expect(statuses(item.patch)).toEqual(["200", "204", "404", ...writes].sort());
     const blocked = Object.keys(relations).length > 0 ? ["409"] : [];
     expect(statuses(item.delete)).toEqual(["204", "400", "404", ...blocked, "default"].sort());
     expect(item.delete?.responses["204"]).toEqual({
       description: "Deleted; no body",
-      headers: { "X-Mock-State": expect.any(Object) },
+      headers: {
+        "X-Mock-State": expect.any(Object),
+        "X-Mock-Applied": expect.any(Object),
+        "Cache-Control": expect.any(Object),
+      },
     });
   });
 
   it.each(resources)("documents exactly the query parameters $name accepts", (resource) => {
     const paths = load("3.1.2").paths;
+    // the controls are shared $refs, checked on their own below
     const names = (operation: Operation | undefined) =>
-      (operation?.parameters ?? []).filter((p) => p.name !== "id").map((p) => p.name);
+      (operation?.parameters ?? [])
+        .filter((p) => "name" in p && p.name !== "id")
+        .map((p) => p.name);
     expect(names(paths[`/v1/${resource.name}`]?.get)).toEqual(listParameterNames(resource));
     expect(names(paths[`/v1/${resource.name}/{id}`]?.get)).toEqual(readParameterNames(resource));
     for (const [relation, { resource: child }] of Object.entries(resource.relations)) {
@@ -271,6 +292,32 @@ describe("generated OpenAPI document", () => {
       type: "string",
       enum: ["active", "draft", "discontinued"],
     });
+  });
+
+  it("documents every control once and refers to it from every operation", () => {
+    const document = load("3.1.2") as unknown as {
+      paths: Record<string, Record<string, Operation>>;
+      components: { parameters: Record<string, { name: string; in: string }> };
+    };
+    const shared = Object.values(document.components.parameters);
+    expect(shared.filter((p) => p.in === "query").map((p) => p.name)).toEqual(
+      controlNames.map((name) => `_mock.${name}`),
+    );
+    expect(shared.filter((p) => p.in === "header").map((p) => p.name)).toEqual(
+      controlNames.map((name) => controlHeaders[name]),
+    );
+    const refs = Object.keys(document.components.parameters).map(
+      (key) => `#/components/parameters/${key}`,
+    );
+    for (const [path, operations] of Object.entries(document.paths)) {
+      for (const [method, operation] of Object.entries(operations)) {
+        const used = (operation.parameters ?? []).flatMap((p) =>
+          "$ref" in p ? [(p as { $ref: string }).$ref] : [],
+        );
+        expect([path, method, used.sort()]).toEqual([path, method, [...refs].sort()]);
+        expect(operation.responses["204"], `${method} ${path}`).toBeDefined();
+      }
+    }
   });
 
   it("documents the query bounds the parser enforces", () => {
@@ -461,6 +508,49 @@ describe("engine responses against the document", () => {
       400,
     ],
     ["unsupported method", "/v1/users", "get", { method: "PUT", path: "/v1/users" }, 405],
+    ["a simulated 503", "/v1/users", "get", get("/v1/users", "_mock.status=503"), 503],
+    ["a simulated 204", "/v1/users/{id}", "get", get("/v1/users/1", "_mock.status=204"), 204],
+    [
+      "a simulated 204 on a write",
+      "/v1/posts",
+      "post",
+      { ...send("POST", "/v1/posts", {}), query: new URLSearchParams("_mock.status=204") },
+      204,
+    ],
+    [
+      "a scenario failure",
+      "/v1/products",
+      "get",
+      get("/v1/products", "_mock.scenario=ratelimited"),
+      429,
+    ],
+    ["an empty scenario", "/v1/products", "get", get("/v1/products", "_mock.scenario=empty"), 200],
+    [
+      "a simulated validation error",
+      "/v1/users",
+      "post",
+      {
+        ...send("POST", "/v1/users", {}),
+        query: new URLSearchParams("_mock.scenario=validation-error"),
+      },
+      422,
+    ],
+    ["a delayed read", "/v1/posts/{id}", "get", get("/v1/posts/1", "_mock.delay=5"), 200],
+    [
+      "another pack on a memory run",
+      "/v1/users",
+      "get",
+      get("/v1/users", "_mock.fixture=edge@1"),
+      409,
+    ],
+    [
+      "a control in a header",
+      "/v1/users/{id}/posts",
+      "get",
+      { ...get("/v1/users/1/posts"), headers: [["X-Mock-Scenario", "maintenance"]] },
+      503,
+    ],
+    ["an invalid control", "/v1/todos", "get", get("/v1/todos", "_mock.status=418"), 400],
   ];
 
   it.each(cases)(
@@ -478,7 +568,10 @@ describe("engine responses against the document", () => {
         content?: Record<string, unknown>;
       };
       expect(documented).toBeDefined();
-      for (const header of Object.keys(documented.headers ?? {})) {
+      for (const [header, spec] of Object.entries(documented.headers ?? {})) {
+        // optional headers such as X-Mock-Applied appear only when a control is used
+        const resolved = resolveHeader(spec);
+        if (!resolved.required) continue;
         expect(response.headers[header.toLowerCase()]).toBeDefined();
       }
       if (documented.content === undefined) {
@@ -541,15 +634,17 @@ describe("Zod and the generated JSON Schema give the expected verdict", () => {
   ];
 
   type Sample = [string, string, z.ZodType, unknown, boolean];
-  const fixtureSamples: Sample[] = resources.flatMap((resource) =>
-    rows(resource.name).map(
-      (row): Sample => [
-        `${resource.name} ${row.id}`,
-        resource.singular,
-        resource.schema,
-        row,
-        true,
-      ],
+  const fixtureSamples: Sample[] = [corePack, edgePack].flatMap((pack) =>
+    resources.flatMap((resource) =>
+      (pack.data[resource.name] as readonly Row[]).map(
+        (row): Sample => [
+          `${pack.manifest.id} ${resource.name} ${row.id}`,
+          resource.singular,
+          resource.schema,
+          row,
+          true,
+        ],
+      ),
     ),
   );
 

@@ -233,8 +233,9 @@ export interface PackData {
 export interface FixtureManifest {
   id: string;
   generator: string;
-  faker: string;
-  seed: number;
+  // null for a pack written by hand rather than drawn from Faker
+  faker: string | null;
+  seed: number | null;
   referenceTime: string;
   locale: string;
   counts: Record<keyof PackData, number>;

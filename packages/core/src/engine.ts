@@ -1,5 +1,12 @@
 import type { Image } from "./contracts.js";
-import { corePack } from "./fixtures/index.js";
+import {
+  defaultMaxDelayMs,
+  type Plan,
+  parseControls,
+  resolvePlan,
+  type SimulatedStatus,
+} from "./controls.js";
+import { defaultFixture, type FixturePack, fixturePacks } from "./fixtures/index.js";
 import { deepFreeze } from "./freeze.js";
 import { listRows } from "./list.js";
 import {
@@ -16,7 +23,13 @@ import {
   resourceNamed,
   resources,
 } from "./resources.js";
-import { type EngineResponse, type FieldIssue, json, problem } from "./response.js";
+import {
+  type EngineResponse,
+  type FieldIssue,
+  json,
+  type ProblemStatus,
+  problem,
+} from "./response.js";
 import { parseInput } from "./validation.js";
 import { type Values, type WriteContext, type WriteRule, writeRules } from "./writes.js";
 
@@ -30,12 +43,20 @@ export interface EngineRequest {
   body?: string | undefined;
   // trusted absolute base for image URLs; without it they stay root-relative
   baseUrl?: string | undefined;
+  // request headers; only the X-Mock-* controls are read
+  headers?: Iterable<readonly [string, string]> | undefined;
 }
 
 export interface EngineOptions {
   state: EngineState;
   sequences?: Readonly<Record<string, readonly number[]>> | undefined;
   now?: (() => Date) | undefined;
+  // the pack a memory engine runs on, and a stateless engine's default pack
+  fixture?: string | undefined;
+  // the host limit for simulated delays
+  maxDelayMs?: number | undefined;
+  // source for exploratory draws without a seed
+  random?: (() => number) | undefined;
 }
 
 export interface Engine {
@@ -53,10 +74,24 @@ type Row = { id: number } & Record<string, unknown>;
 type Store = Record<ResourceName, Row[]>;
 type Params = Record<string, string>;
 
+// the records one request works on: the run's own in memory, a pack's when stateless
+interface Data {
+  pack: string;
+  store: Store;
+  nextIds: Record<ResourceName, number>;
+  // the empty scenario: reads see no records
+  empty: boolean;
+}
+
+// what a route sees: the query without controls, and the full query for links
+interface RouteRequest extends EngineRequest {
+  links: readonly (readonly [string, string])[];
+}
+
 interface Route {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   pattern: string;
-  run(params: Params, request: EngineRequest): EngineResponse;
+  run(params: Params, request: RouteRequest, data: Data): EngineResponse;
 }
 
 const route = (method: Route["method"], pattern: string, run: Route["run"]): Route => ({
@@ -65,32 +100,44 @@ const route = (method: Route["method"], pattern: string, run: Route["run"]): Rou
   run,
 });
 
-export function createEngine({ state, sequences = {}, now = defaultNow }: EngineOptions): Engine {
-  let store = freshStore();
-  let nextIds = nextIdsOf(store);
+export function createEngine({
+  state,
+  sequences = {},
+  now = defaultNow,
+  fixture = defaultFixture,
+  maxDelayMs = defaultMaxDelayMs,
+  random = Math.random,
+}: EngineOptions): Engine {
+  const runPack = packNamed(fixture);
+  if (!Number.isSafeInteger(maxDelayMs) || maxDelayMs < 0) {
+    throw new Error(`maxDelayMs must be a whole number of milliseconds, got ${maxDelayMs}.`);
+  }
+  let run = dataOf(runPack);
+  // stateless engines read packs and never change them, so one copy per pack is enough
+  const packData = new Map<string, Data>();
   const positions = new Map<string, number>();
 
   const routes: Route[] = [
     ...resources.flatMap((resource) => [
-      route("GET", `/v1/${resource.name}`, (_, request) => list(resource, request)),
-      route("POST", `/v1/${resource.name}`, (_, request) =>
-        write(resource, "create", undefined, request),
+      route("GET", `/v1/${resource.name}`, (_, request, data) => list(resource, request, data)),
+      route("POST", `/v1/${resource.name}`, (_, request, data) =>
+        write(resource, "create", undefined, request, data),
       ),
-      route("GET", `/v1/${resource.name}/:id`, (params, request) =>
-        read(resource, params, request),
+      route("GET", `/v1/${resource.name}/:id`, (params, request, data) =>
+        read(resource, params, request, data),
       ),
-      route("PUT", `/v1/${resource.name}/:id`, (params, request) =>
-        write(resource, "replace", params, request),
+      route("PUT", `/v1/${resource.name}/:id`, (params, request, data) =>
+        write(resource, "replace", params, request, data),
       ),
-      route("PATCH", `/v1/${resource.name}/:id`, (params, request) =>
-        write(resource, "update", params, request),
+      route("PATCH", `/v1/${resource.name}/:id`, (params, request, data) =>
+        write(resource, "update", params, request, data),
       ),
-      route("DELETE", `/v1/${resource.name}/:id`, (params, request) =>
-        remove(resource, params, request),
+      route("DELETE", `/v1/${resource.name}/:id`, (params, request, data) =>
+        remove(resource, params, request, data),
       ),
       ...Object.entries(resource.relations).map(([name, relation]) =>
-        route("GET", `/v1/${resource.name}/:id/${name}`, (params, request) =>
-          related(resource, relation, params, request),
+        route("GET", `/v1/${resource.name}/:id/${name}`, (params, request, data) =>
+          related(resource, relation, params, request, data),
         ),
       ),
     ]),
@@ -98,19 +145,28 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
   const plan = readSequences(sequences, routes);
 
   function reset() {
-    store = freshStore();
-    nextIds = nextIdsOf(store);
+    run = dataOf(runPack);
     positions.clear();
   }
-  reset();
+
+  function dataFor(pack: string, empty: boolean): Data {
+    let data = state === "memory" ? run : packData.get(pack);
+    if (!data) {
+      data = dataOf(packNamed(pack));
+      packData.set(pack, data);
+    }
+    return empty ? { ...data, empty } : data;
+  }
 
   function handle(request: EngineRequest): EngineResponse {
     const response = dispatch(request);
     const headers = { ...response.headers, "x-mock-state": state };
     // HEAD never carries a body, whatever the outcome
-    return request.method === "HEAD"
-      ? { status: response.status, headers }
-      : { ...response, headers };
+    if (request.method === "HEAD") {
+      const { body: _body, rawBody: _raw, ...rest } = response;
+      return { ...rest, headers };
+    }
+    return { ...response, headers };
   }
 
   function dispatch(request: EngineRequest): EngineResponse {
@@ -131,8 +187,58 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
       return { ...response, headers: { ...response.headers, allow: allowed.join(", ") } };
     }
 
+    // read once: a caller may pass a one-shot iterable
+    const pairs = [...(request.query ?? [])];
+    const parsed = parseControls(pairs, request.headers, {
+      maxDelayMs,
+      fixtures: Object.keys(fixturePacks),
+      method: request.method,
+    });
+    if (!parsed.ok) {
+      return problem(
+        400,
+        "invalid_controls",
+        "The simulation controls are not valid.",
+        parsed.issues,
+      );
+    }
+    const { controls, query, given } = parsed.value;
+    // links repeat the query controls, so following one keeps the same pack and recipe
+    const routeRequest: RouteRequest = { ...request, query, links: pairs };
+
+    if (
+      state === "memory" &&
+      controls.fixture !== undefined &&
+      controls.fixture !== runPack.manifest.id
+    ) {
+      return problem(
+        409,
+        "fixture_locked",
+        `This run uses ${runPack.manifest.id}. Create a new engine to use ${controls.fixture}.`,
+      );
+    }
+
+    const resolved = resolvePlan({
+      controls,
+      method: request.method,
+      requestKey: `${request.method} ${request.path}?${query
+        .map(([name, value]) => `${name}=${value}`)
+        .sort()
+        .join("&")}`,
+      maxDelayMs,
+      random,
+    });
+    const data = dataFor(controls.fixture ?? runPack.manifest.id, resolved.empty);
     const key = `${hit.route.method} ${hit.route.pattern}`;
-    return nextFailure(key) ?? hit.route.run(hit.params, request);
+
+    // explicit controls outrank configured sequences, so they do not consume a step
+    const response =
+      resolved.status !== undefined
+        ? simulatedStatus(resolved.status, resolved.retryAfter, controls.scenario)
+        : resolved.validation
+          ? simulatedValidation(hit.route.pattern)
+          : (nextFailure(key) ?? hit.route.run(hit.params, routeRequest, data));
+    return given ? applyPlan(response, resolved) : response;
   }
 
   function nextFailure(key: string): EngineResponse | undefined {
@@ -149,62 +255,69 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
     );
   }
 
-  function find(name: ResourceName, id: string | undefined): Row | undefined {
-    return store[name].find((row) => row.id === Number(id));
+  function find(data: Data, name: ResourceName, id: string | undefined): Row | undefined {
+    if (data.empty) return undefined;
+    return data.store[name].find((row) => row.id === Number(id));
   }
 
-  function list(resource: Resource, request: EngineRequest): EngineResponse {
-    return listOf(resource, store[resource.name], request);
+  function list(resource: Resource, request: RouteRequest, data: Data): EngineResponse {
+    return listOf(resource, data.empty ? [] : data.store[resource.name], request, data);
   }
 
   function related(
     resource: Resource,
     relation: Relation,
     params: Params,
-    request: EngineRequest,
+    request: RouteRequest,
+    data: Data,
   ): EngineResponse {
     const child = resourceNamed(relation.resource);
-    const parent = find(resource.name, params.id);
+    const parent = find(data, resource.name, params.id);
     // the query is checked first, so a bad query on a missing parent is still 400
     const rows = parent
-      ? store[relation.resource].filter((row) => row[relation.foreignKey] === parent.id)
+      ? data.store[relation.resource].filter((row) => row[relation.foreignKey] === parent.id)
       : [];
-    return listOf(child, rows, request, parent ? undefined : resource);
+    return listOf(child, rows, request, data, parent ? undefined : resource);
   }
 
   function listOf(
     resource: Resource,
     rows: readonly Row[],
-    request: EngineRequest,
+    request: RouteRequest,
+    data: Data,
     missingParent?: Resource,
   ): EngineResponse {
     const params = [...(request.query ?? [])];
-    const query = parseListQuery(resource, params, {
-      path: request.path,
-      pack: corePack.manifest.id,
-    });
+    const query = parseListQuery(resource, params, { path: request.path, pack: data.pack });
     if (!query.ok) return invalidQuery(query);
     if (missingParent) return notFound(missingParent);
     const page = listRows(resource, rows, query.value, {
       path: request.path,
       baseUrl: request.baseUrl,
-      params,
+      params: request.links,
     });
     return json(
       200,
       {
-        data: page.data.map((row) => shape(resource, row, request.baseUrl, query.value.view)),
+        data: page.data.map((row) => shape(resource, row, request.baseUrl, query.value.view, data)),
         meta: page.meta,
       },
       { link: page.link },
     );
   }
 
-  function read(resource: Resource, params: Params, request: EngineRequest): EngineResponse {
+  function read(
+    resource: Resource,
+    params: Params,
+    request: EngineRequest,
+    data: Data,
+  ): EngineResponse {
     const query = parseReadQuery(resource, request.query ?? []);
     if (!query.ok) return invalidQuery(query);
-    const row = find(resource.name, params.id);
-    return row ? json(200, shape(resource, row, request.baseUrl, query.value)) : notFound(resource);
+    const row = find(data, resource.name, params.id);
+    return row
+      ? json(200, shape(resource, row, request.baseUrl, query.value, data))
+      : notFound(resource);
   }
 
   // projection keeps the selected fields, then each expansion adds a full related record
@@ -213,6 +326,7 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
     row: Row,
     baseUrl: string | undefined,
     view: View,
+    data: Data,
   ): Record<string, unknown> {
     const shown = present(resource, row, baseUrl);
     if (view.fields === undefined && view.expand.length === 0) return shown;
@@ -223,7 +337,8 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
       const reference = resource.expansions[name];
       if (!reference) continue;
       const id = row[reference.field];
-      const target = id === null ? undefined : store[reference.resource].find((r) => r.id === id);
+      const target =
+        id === null ? undefined : data.store[reference.resource].find((r) => r.id === id);
       out[name] = target ? present(resourceNamed(reference.resource), target, baseUrl) : null;
     }
     return out;
@@ -234,10 +349,11 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
     mode: "create" | "replace" | "update",
     params: Params | undefined,
     request: EngineRequest,
+    data: Data,
   ): EngineResponse {
     const query = parseNoQuery(request.query ?? []);
     if (!query.ok) return invalidQuery(query);
-    const existing = params ? find(resource.name, params.id) : undefined;
+    const existing = params ? find(data, resource.name, params.id) : undefined;
     if (params && !existing) return notFound(resource);
 
     const body = readJson(request);
@@ -254,10 +370,10 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
         ? { ...writableOf(existing, rule), ...parsed.value }
         : { ...rule.defaults, ...parsed.value };
     const context: WriteContext = {
-      id: existing?.id ?? nextIds[resource.name],
+      id: existing?.id ?? data.nextIds[resource.name],
       at: now().toISOString(),
       existing,
-      rows: (name) => store[name],
+      rows: (name) => data.store[name],
     };
 
     const issues = [
@@ -279,29 +395,36 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
     const record = deepFreeze(rule.build(values, context));
     // stateless runs answer as if saved but keep nothing
     if (state === "memory") {
-      const rows = store[resource.name];
+      const rows = data.store[resource.name];
       if (existing) {
         rows[rows.indexOf(existing)] = record;
       } else {
         rows.push(record);
-        nextIds[resource.name] += 1;
+        data.nextIds[resource.name] += 1;
       }
     }
     const shown = present(resource, record, request.baseUrl);
-    return existing
-      ? json(200, shown)
-      : json(201, shown, { location: `/v1/${resource.name}/${record.id}` });
+    const path = `/v1/${resource.name}/${record.id}`;
+    // a stateless create on another pack points at that pack, not the default one
+    const location =
+      data.pack === runPack.manifest.id ? path : `${path}?_mock.fixture=${data.pack}`;
+    return existing ? json(200, shown) : json(201, shown, { location });
   }
 
-  function remove(resource: Resource, params: Params, request: EngineRequest): EngineResponse {
+  function remove(
+    resource: Resource,
+    params: Params,
+    request: EngineRequest,
+    data: Data,
+  ): EngineResponse {
     const query = parseNoQuery(request.query ?? []);
     if (!query.ok) return invalidQuery(query);
-    const existing = find(resource.name, params.id);
+    const existing = find(data, resource.name, params.id);
     if (!existing) return notFound(resource);
 
     // deletes are restrictive: dependents must go first
     const dependents = Object.entries(resource.relations).flatMap(([name, relation]) => {
-      const count = store[relation.resource].filter(
+      const count = data.store[relation.resource].filter(
         (row) => row[relation.foreignKey] === existing.id,
       ).length;
       return count > 0 ? [`${name} (${count})`] : [];
@@ -315,7 +438,7 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
     }
 
     if (state === "memory") {
-      store[resource.name] = store[resource.name].filter((row) => row.id !== existing.id);
+      data.store[resource.name] = data.store[resource.name].filter((row) => row.id !== existing.id);
     }
     return { status: 204, headers: {} };
   }
@@ -323,8 +446,92 @@ export function createEngine({ state, sequences = {}, now = defaultNow }: Engine
   return { state, handle, reset };
 }
 
-function freshStore(): Store {
-  const entries = resources.map((resource) => [resource.name, [...corePack.data[resource.name]]]);
+function packNamed(id: string): FixturePack {
+  const pack = fixturePacks[id];
+  if (!pack) {
+    throw new Error(
+      `Unknown fixture pack "${id}". Use one of: ${Object.keys(fixturePacks).join(", ")}.`,
+    );
+  }
+  return pack;
+}
+
+function dataOf(pack: FixturePack): Data {
+  const store = freshStore(pack);
+  return { pack: pack.manifest.id, store, nextIds: nextIdsOf(store), empty: false };
+}
+
+function simulatedStatus(
+  status: SimulatedStatus,
+  retryAfter: number | undefined,
+  scenario: string | undefined,
+): EngineResponse {
+  if (status === 204) return { status: 204, headers: {} };
+  const source = scenario ? `the ${scenario} scenario` : "_mock.status";
+  const response = problem(
+    status as ProblemStatus,
+    "simulated_status",
+    `Simulated ${status} from ${source}.`,
+  );
+  return retryAfter === undefined
+    ? response
+    : { ...response, headers: { ...response.headers, "retry-after": String(retryAfter) } };
+}
+
+// one field error per required input field, as if each had been rejected
+function simulatedValidation(pattern: string): EngineResponse {
+  const name = pattern.split("/")[2] as ResourceName;
+  const shape = writeRules[name].input.shape;
+  const required = Object.keys(shape).filter((field) => !shape[field]?.isOptional());
+  return problem(
+    422,
+    "validation_failed",
+    "The request body has invalid fields.",
+    required.map((field) => ({
+      field,
+      code: "simulated",
+      message: `"${field}" was rejected by the validation-error scenario.`,
+    })),
+  );
+}
+
+const htmlPage = (status: number) =>
+  `<!doctype html><html><head><title>${status} Error</title></head><body><h1>${status} Error</h1><p>A proxy answered instead of the API.</p></body></html>`;
+
+// body faults replace the final body; headers say which controls shaped the response
+function applyPlan(response: EngineResponse, plan: Plan): EngineResponse {
+  const headers: Record<string, string> = {
+    ...response.headers,
+    "x-mock-applied": plan.applied.map(([name, value]) => `${name}=${value}`).join(", "),
+    "cache-control": "no-store",
+  };
+  const shaped: EngineResponse = { ...response, headers };
+  if (plan.delayMs > 0) shaped.delayMs = plan.delayMs;
+  const text = response.body === undefined ? "" : JSON.stringify(response.body);
+  switch (plan.body) {
+    case "malformed-json":
+      return { ...shaped, rawBody: text.slice(0, Math.max(1, Math.floor(text.length / 2))) };
+    case "empty":
+      return { ...shaped, rawBody: "" };
+    case "html":
+      return {
+        ...shaped,
+        headers: { ...headers, "content-type": "text/html; charset=utf-8" },
+        rawBody: htmlPage(response.status),
+      };
+    case "wrong-content-type":
+      return {
+        ...shaped,
+        headers: { ...headers, "content-type": "text/plain; charset=utf-8" },
+        rawBody: text,
+      };
+    default:
+      return shaped;
+  }
+}
+
+function freshStore(pack: FixturePack): Store {
+  const entries = resources.map((resource) => [resource.name, [...pack.data[resource.name]]]);
   return Object.fromEntries(entries) as Store;
 }
 

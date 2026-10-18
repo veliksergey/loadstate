@@ -19,16 +19,18 @@ export function createHandlers(engine: Engine, { baseUrl }: HandlerOptions) {
       ({ request }) => inScope(new URL(request.url)),
       async ({ request }) => {
         const url = new URL(request.url);
-        const { status, headers, body } = serialize(
-          engine.handle({
-            method: request.method,
-            path: url.pathname.slice(prefix.length),
-            query: url.searchParams,
-            contentType: request.headers.get("content-type") ?? undefined,
-            body: await request.text(),
-            baseUrl: `${base.origin}${prefix}`,
-          }),
-        );
+        const response = engine.handle({
+          method: request.method,
+          path: url.pathname.slice(prefix.length),
+          query: url.searchParams,
+          headers: request.headers,
+          contentType: request.headers.get("content-type") ?? undefined,
+          body: await request.text(),
+          baseUrl: `${base.origin}${prefix}`,
+        });
+        // the engine plans a simulated delay; the handler waits before answering
+        if (response.delayMs) await new Promise((done) => setTimeout(done, response.delayMs));
+        const { status, headers, body } = serialize(response);
         return new Response(body, { status, headers });
       },
     ),

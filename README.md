@@ -42,7 +42,12 @@ The Node server is stateless: a write is validated and answered but not stored, 
 ```text
 GET /v1/products?q=lamp&status=active&priceMinor_gte=1000&sort=-priceMinor&fields=id,title,priceMinor
 GET /v1/posts?pagination=cursor&limit=10&sort=-publishedAt&expand=author
+GET /v1/users?_mock.scenario=slow                  2 s delay, then the normal page
+GET /v1/users/7?_mock.status=503                   503 with Retry-After, the route never runs
+GET /v1/products?_mock.fixture=edge@1              the edge pack: long, RTL and emoji text, nulls, zeros
 ```
+
+Every `/v1` route takes `_mock.*` simulation controls or their `X-Mock-*` headers: a delay, a status, a named scenario such as `maintenance` or `retry-then-ok`, a body fault, a fail rate and a fixture pack. `docs/API-SPEC.md` lists them all.
 
 ## Use in tests
 

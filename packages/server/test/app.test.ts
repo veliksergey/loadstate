@@ -192,6 +192,40 @@ describe("engine routes", () => {
   });
 });
 
+describe("simulation controls over Hono", () => {
+  it("reads control headers and waits out a simulated delay", async () => {
+    const started = Date.now();
+    const response = await app.request("/v1/users?_mock.delay=60", {
+      headers: { "X-Mock-Scenario": "maintenance" },
+    });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(55);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("60");
+    expect(response.headers.get("x-mock-applied")).toBe(
+      "scenario=maintenance, status=503, delay=60",
+    );
+  });
+
+  it("answers at once without a delay", async () => {
+    const started = Date.now();
+    expect((await app.request("/v1/users?_mock.status=204")).status).toBe(204);
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it("sends body faults as raw text", async () => {
+    const malformed = await app.request("/v1/users/1?_mock.body=malformed-json");
+    expect(malformed.headers.get("content-type")).toBe("application/json");
+    await expect(malformed.json()).rejects.toThrow();
+    const empty = await app.request("/v1/users/1?_mock.body=empty");
+    expect(await empty.text()).toBe("");
+  });
+
+  it("reads another pack on the stateless default engine", async () => {
+    const response = await app.request("/v1/users?_mock.fixture=edge@1");
+    expect(userPage.parse(await response.json()).meta).toMatchObject({ total: 9 });
+  });
+});
+
 describe("request body limit", () => {
   it("passes a body of exactly the limit to the engine", async () => {
     const engine = createEngine({ state: "memory" });

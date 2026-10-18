@@ -7,6 +7,10 @@ export interface EngineResponse {
   status: number;
   headers: Record<string, string>;
   body?: unknown;
+  // exact body text, for simulated faults that are not JSON; wins over body
+  rawBody?: string;
+  // milliseconds the adapter waits before sending headers; the engine never waits
+  delayMs?: number;
 }
 
 export const fieldIssueSchema = z.strictObject({
@@ -35,12 +39,15 @@ const titles = {
   403: "Forbidden",
   404: "Not Found",
   405: "Method Not Allowed",
+  408: "Request Timeout",
   409: "Conflict",
+  410: "Gone",
   413: "Content Too Large",
   415: "Unsupported Media Type",
   422: "Unprocessable Content",
   429: "Too Many Requests",
   500: "Internal Server Error",
+  501: "Not Implemented",
   502: "Bad Gateway",
   503: "Service Unavailable",
   504: "Gateway Timeout",
@@ -83,6 +90,7 @@ export interface SerializedResponse {
   body: string | null;
 }
 
-export function serialize({ status, headers, body }: EngineResponse): SerializedResponse {
+export function serialize({ status, headers, body, rawBody }: EngineResponse): SerializedResponse {
+  if (rawBody !== undefined) return { status, headers, body: rawBody };
   return { status, headers, body: body === undefined ? null : JSON.stringify(body) };
 }

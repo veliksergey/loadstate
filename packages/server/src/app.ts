@@ -34,16 +34,18 @@ export function createApp({
       );
     }
     const url = new URL(c.req.url);
-    return toResponse(
-      engine.handle({
-        method: c.req.method,
-        path: url.pathname,
-        query: url.searchParams,
-        contentType: c.req.header("content-type"),
-        body,
-        baseUrl: publicUrl ?? url.origin,
-      }),
-    );
+    const response = engine.handle({
+      method: c.req.method,
+      path: url.pathname,
+      query: url.searchParams,
+      headers: c.req.raw.headers,
+      contentType: c.req.header("content-type"),
+      body,
+      baseUrl: publicUrl ?? url.origin,
+    });
+    // the engine plans a simulated delay; the adapter waits before sending headers
+    if (response.delayMs) await wait(response.delayMs);
+    return toResponse(response);
   });
 
   app.notFound(() => toResponse(problem(404, "not_found", "No route matches this path.")));
@@ -57,6 +59,8 @@ export function createApp({
 
   return app;
 }
+
+const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 export function toResponse(response: EngineResponse): Response {
   const { status, headers, body } = serialize(response);

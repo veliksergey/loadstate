@@ -16,6 +16,26 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
+describe("simulation controls through MSW", () => {
+  it("reads control headers and waits out a simulated delay", async () => {
+    const started = Date.now();
+    const response = await fetch("http://api.loadstate.test/api/v1/users/1?_mock.delay=60", {
+      headers: { "X-Mock-Status": "503" },
+    });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(55);
+    expect(response.status).toBe(503);
+    expect(response.headers.get("retry-after")).toBe("60");
+    expect(response.headers.get("x-mock-applied")).toBe("status=503, delay=60");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("sends a body fault as raw text", async () => {
+    const response = await fetch("http://api.loadstate.test/api/v1/users/1?_mock.body=html");
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await response.text()).toMatch(/^<!doctype html>/);
+  });
+});
+
 describe("createHandlers", () => {
   it("forwards requests under the base path to the engine", async () => {
     const response = await fetch("http://api.loadstate.test/api/v1/users?limit=1&offset=2");

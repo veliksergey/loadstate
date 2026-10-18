@@ -29,6 +29,24 @@ export {
   userCreateSchema,
   userSchema,
 } from "./contracts.js";
+export {
+  type BodyFault,
+  bodyFaults,
+  type ControlIssue,
+  type ControlName,
+  type Controls,
+  controlHeaders,
+  controlNames,
+  defaultMaxDelayMs,
+  type Plan,
+  parseControls,
+  resolvePlan,
+  retryAfterSeconds,
+  type ScenarioName,
+  type SimulatedStatus,
+  scenarioNames,
+  simulatedStatuses,
+} from "./controls.js";
 export { decodeCursor, encodeCursor, maxCursorLength } from "./cursor.js";
 export {
   createEngine,
@@ -39,7 +57,13 @@ export {
   sequenceStatuses,
 } from "./engine.js";
 export { type FieldKind, type FieldType, fieldKind } from "./fields.js";
-export { corePack, type FixturePack } from "./fixtures/index.js";
+export {
+  corePack,
+  defaultFixture,
+  edgePack,
+  type FixturePack,
+  fixturePacks,
+} from "./fixtures/index.js";
 export { type ListPage, listRows } from "./list.js";
 export { createOpenApiDocument, type OpenApiDocument, type OpenApiVersion } from "./openapi.js";
 export {

@@ -1,6 +1,6 @@
 # API spec: M1 surface
 
-Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 to 3 implement the resources, the REST routes, the write rules, the query parameters and the list responses below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
+Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 to 4 implement the resources, the REST routes, the write rules, the query parameters, the list responses and the simulation controls below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
 
 `api.loadstate.example` is a placeholder until the name and domain are chosen.
 
@@ -36,7 +36,7 @@ Counts are fixture-manifest metadata, not promises. The `core@1` pack generated 
 
 A relation is read as a nested list with the same pagination rules: `/v1/users/7/posts`, `/v1/comments/3/replies`, `/v1/categories/1/children`. The nested list of a missing parent is 404.
 
-Valid edge packs include records with omitted optional fields, explicit nulls, empty strings, zero stock, long text, Unicode and RTL names, duplicate display names, date boundaries and missing optional relations. Fault packs with malformed or invalid records are separately labeled and arrive in M1b.
+The valid edge pack `edge@1` is small and written by hand: 9 users, 8 posts, 10 comments, 7 categories, 7 products and 7 todos. It holds explicit nulls, text at every maximum length, Unicode, right-to-left and emoji names and titles, titles that leave no slug text, duplicate display names, date boundaries (the epoch, a leap day, the reference time), zero and maximum prices and stock, unrated products, empty tag lists, and records without optional relations. It obeys every rule the core pack does. Select it with `_mock.fixture=edge@1`, or create an engine with `fixture: "edge@1"`. Fault packs with malformed or invalid records are separately labeled and arrive in M1b.
 
 Every image field is an object. Fixtures store its `url` as a path under `/img`; responses make it absolute with a trusted base URL, so the same data works on every host. The Node server uses its configured `publicUrl` or its own listening origin, never the client's `Host` header; the Worker uses the hostname Cloudflare routed the request to, and the MSW adapter uses its `baseUrl`, path prefix included. The `/img` endpoint that serves these URLs arrives in M1a step 5. Blur metadata is optional and documented when added.
 
@@ -65,7 +65,7 @@ Every image field is an object. Fixtures store its `url` as a path under `/img`;
 
 Unsupported methods return 405 with `Allow`: `GET, HEAD, POST` on a collection and `GET, HEAD, PUT, PATCH, DELETE` on a record. A malformed id such as `007` matches no route and is 404 for every method.
 
-In stateless mode (the public demo, or `--mode stateless` locally) a successful write returns the record as it would look if saved and `X-Mock-State: stateless`; a following GET of the new id returns 404, and a deleted record is still readable. In memory mode every write is visible to later reads in the same run, and a reset restores the pack and its next ids.
+In stateless mode (the public demo, or `--mode stateless` locally) a successful write returns the record as it would look if saved and `X-Mock-State: stateless`; a following GET of the new id returns 404, and a deleted record is still readable. A create on a pack other than the engine's default answers with a `Location` that carries `_mock.fixture`, so following it reads that pack. In memory mode every write is visible to later reads in the same run, and a reset restores the pack and its next ids.
 
 ### Writes
 
@@ -205,39 +205,41 @@ Single records are bare objects. Errors use RFC 9457 Problem Details with a stab
 }
 ```
 
-Every list response carries `Link` with `first`, `prev` and `next` where they apply and, outside cursor mode, `last`. A link keeps the request's other parameters and uses the deployment's trusted base URL: the configured `publicUrl` or the listening origin on Node, the routed hostname on Workers, the MSW `baseUrl`, and a root-relative path in-process. Planned response headers: `ETag` (with 304 on `If-None-Match` for cacheable fixtures), `Retry-After` on 429 and 503, `X-Mock-State` (`stateless` or `memory`), and `X-Mock-Applied` listing the controls and recipe that shaped the response. All of these are listed in `Access-Control-Expose-Headers`. Anonymous public reads allow any origin without credentials. Simulated failures, delays and stateful responses are `no-store`; normal fixtures and images opt into caching.
+Every list response carries `Link` with `first`, `prev` and `next` where they apply and, outside cursor mode, `last`. A link keeps the request's other parameters, query controls such as `_mock.fixture` included, and uses the deployment's trusted base URL: the configured `publicUrl` or the listening origin on Node, the routed hostname on Workers, the MSW `baseUrl`, and a root-relative path in-process. Planned response headers: `ETag` (with 304 on `If-None-Match` for cacheable fixtures), `Retry-After` on 429 and 503, `X-Mock-State` (`stateless` or `memory`), and `X-Mock-Applied` listing the controls and recipe that shaped the response. All of these are listed in `Access-Control-Expose-Headers`. Anonymous public reads allow any origin without credentials. Simulated failures, delays and stateful responses are `no-store`; normal fixtures and images opt into caching.
 
 ## Simulation controls
 
-Query controls win over their header equivalents. Immutable host limits apply first, then explicit request controls, then run configuration, then recipe defaults. Incompatible combinations, for example a malformed body with 204, return 400.
+Every `/v1` route accepts the controls below as query parameters or as headers. A query control wins over its header, which is then ignored. Controls are removed before the route reads its own query, and routing errors (404, 405) come first. An unknown `_mock.*` parameter or `X-Mock-*` header, a malformed or repeated value, or an incompatible combination answers 400 `invalid_controls` with one field error per problem.
 
-| Query | Header | Example | Effect |
+The host limit applies first. Explicit request controls then win over recipe defaults, and both win over the engine's configured `sequences`: a request with a simulated status does not consume a sequence step.
+
+| Query | Header | Values | Effect |
 |---|---|---|---|
-| `_mock.delay` | `X-Mock-Delay` | `1500` | Wait before sending headers; maximum 10 000 ms on the public host |
-| `_mock.status` | `X-Mock-Status` | `503` | Allowlisted final status with a Problem Details body; bodyless statuses are respected |
-| `_mock.scenario` | `X-Mock-Scenario` | `maintenance` | Named recipe from the table below |
-| `_mock.body` | `X-Mock-Body` | `malformed-json` | Fault profile: `malformed-json`, `empty`, `html`, `wrong-content-type` |
-| `_mock.step` | `X-Mock-Step` | `2` | Select a step of a stepped recipe; stateless endpoints do not track progress |
-| `_mock.failRate` | `X-Mock-Fail-Rate` | `0.3` | Exploratory random failure, 0 to 1; never the mechanism for automated tests |
-| `_mock.fixture` | `X-Mock-Fixture` | `core@1` | Published fixture-pack version; default is the release's documented pack |
-| `_mock.seed` | `X-Mock-Seed` | `42` | Reproducible variation input; not a run identifier |
-
-Named recipes in M1a are deterministic unless marked exploratory:
+| `_mock.delay` | `X-Mock-Delay` | 0 to the host limit, 10 000 ms by default | Wait before sending headers. The engine returns the delay as an effect, and the Node server, the Worker and the MSW handlers wait. A larger value is 400 `limit_exceeded` |
+| `_mock.status` | `X-Mock-Status` | 204, 400, 401, 403, 404, 408, 409, 410, 413, 415, 422, 429, 500, 501, 502, 503, 504 | Answer with this status before the route runs, so a write changes nothing. Errors carry Problem Details with code `simulated_status`; 204 has no body; 429 sends `Retry-After: 5` and 503 `Retry-After: 60` |
+| `_mock.scenario` | `X-Mock-Scenario` | a recipe below | Run the recipe |
+| `_mock.body` | `X-Mock-Body` | `malformed-json`, `empty`, `html`, `wrong-content-type` | Replace the final body: the first half of the JSON text, no bytes, an HTML error page as `text/html`, or the normal JSON as `text/plain`. 400 with HEAD, DELETE or a simulated 204 |
+| `_mock.step` | `X-Mock-Step` | 1 to 3 | The step of `retry-then-ok`; 400 with any other scenario |
+| `_mock.failRate` | `X-Mock-Fail-Rate` | 0 to 1 | Exploratory: answer 500 with this probability; never the mechanism for automated tests |
+| `_mock.fixture` | `X-Mock-Fixture` | `core@1`, `edge@1` | The pack a stateless engine reads for this request. A memory engine keeps the pack it was created with and answers 409 `fixture_locked` to any other |
+| `_mock.seed` | `X-Mock-Seed` | 0 to 4294967295 | Makes `_mock.failRate` and `flaky` draws reproducible: the same seed and request always give the same outcome. 400 without one of them |
 
 | Recipe | Behavior |
 |---|---|
-| `slow` | Fixed 2 000 ms delay, then the normal response |
-| `empty` | Lists return empty `data` with correct `meta`; single records return 404 |
+| `slow` | A 2 000 ms delay, capped by the host limit, then the normal response |
+| `empty` | GET and HEAD see no records: lists are empty with correct meta, and a record or a record's nested list is 404. Writes see the real pack |
 | `error` | 500 |
 | `unauthorized` | 401 |
 | `forbidden` | 403 |
 | `notfound` | 404 |
 | `ratelimited` | 429 with `Retry-After: 5` |
 | `maintenance` | 503 with `Retry-After: 60` |
-| `timeout` | Waits the maximum delay, then 504; this is a gateway error, not a client timeout |
-| `validation-error` | Writes return 422 with field errors; reads are unaffected |
-| `retry-then-ok` | 503, 503, 200: selected by `_mock.step=1..3` on stateless endpoints, automatic per-run sequence in M1b |
-| `flaky` | Exploratory: 200–800 ms delay and a 30 % failure rate; not for automated tests |
+| `timeout` | Waits the host limit, then 504; a gateway error, not a client timeout |
+| `validation-error` | POST, PUT and PATCH answer 422 with one `simulated` field error per required input field, before the route runs; other methods are unaffected |
+| `retry-then-ok` | `_mock.step=1` and `2` answer 503 with `Retry-After: 1`, step 3 the normal response; a missing step is 400. Automatic per-run sequences arrive in M1b |
+| `flaky` | Exploratory: a 200 to 800 ms delay and a 30 % chance of 500; not for automated tests |
+
+Every response a control shaped carries `X-Mock-Applied` with the resolved controls, for example `scenario=maintenance, status=503` or `scenario=flaky, status=500, delay=437, failRate=0.3`, and `Cache-Control: no-store`. A response without controls carries neither. Without a seed, random draws use the engine's `random` option, which defaults to `Math.random`; the host limit is the engine's `maxDelayMs` option.
 
 ## Images
 

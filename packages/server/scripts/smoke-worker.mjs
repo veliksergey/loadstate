@@ -54,6 +54,22 @@ try {
   assert.equal(expanded.author.id, expanded.userId);
   assert.ok(expanded.author.avatar.url.startsWith(`${base}/img/avatar/`));
 
+  // controls: a header-driven status after a real wait, another pack, a body fault
+  const started = Date.now();
+  const simulated = await fetch(`${base}/v1/users/1?_mock.delay=50`, {
+    headers: { "X-Mock-Status": "503" },
+  });
+  assert.ok(Date.now() - started >= 45);
+  assert.equal(simulated.status, 503);
+  assert.equal(simulated.headers.get("retry-after"), "60");
+  assert.equal(simulated.headers.get("x-mock-applied"), "status=503, delay=50");
+  assert.equal(simulated.headers.get("cache-control"), "no-store");
+  const edge = await (await fetch(`${base}/v1/users?_mock.fixture=edge@1`)).json();
+  assert.equal(edge.meta.total, 9);
+  const html = await fetch(`${base}/v1/users/1?_mock.body=html`);
+  assert.equal(html.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.ok((await html.text()).startsWith("<!doctype html>"));
+
   const nested = await fetch(`${base}/v1/categories/2/products?limit=1`);
   assert.equal(nested.status, 200);
   assert.equal((await nested.json()).data[0].categoryId, 2);

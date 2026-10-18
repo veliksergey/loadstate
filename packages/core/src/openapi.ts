@@ -1,7 +1,18 @@
 import { z } from "zod";
 import { addressSchema, imageSchema } from "./contracts.js";
+import {
+  bodyFaults,
+  type ControlName,
+  controlHeaders,
+  controlNames,
+  defaultMaxDelayMs,
+  retrySteps,
+  scenarioNames,
+  simulatedStatuses,
+} from "./controls.js";
 import { maxCursorLength } from "./cursor.js";
 import type { FieldKind } from "./fields.js";
+import { fixturePacks } from "./fixtures/index.js";
 import {
   cursorMetaSchema,
   offsetMetaSchema,
@@ -35,6 +46,74 @@ type Operation = Record<string, unknown>;
 
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 const mockState = { $ref: "#/components/headers/MockState" };
+// every engine response may carry these when a simulation control shaped it
+const controlled = {
+  "X-Mock-Applied": { $ref: "#/components/headers/MockApplied" },
+  "Cache-Control": { $ref: "#/components/headers/NoStore" },
+};
+
+const controlSchemas: Record<ControlName, Record<string, unknown>> = {
+  delay: { type: "integer", minimum: 0, maximum: defaultMaxDelayMs },
+  status: { type: "integer", enum: [...simulatedStatuses] },
+  scenario: { type: "string", enum: [...scenarioNames] },
+  body: { type: "string", enum: [...bodyFaults] },
+  step: { type: "integer", minimum: 1, maximum: retrySteps },
+  failRate: { type: "number", minimum: 0, maximum: 1 },
+  fixture: { type: "string", enum: Object.keys(fixturePacks) },
+  seed: { type: "integer", minimum: 0, maximum: 0xffffffff },
+};
+
+const controlText: Record<ControlName, string> = {
+  delay:
+    "Milliseconds to wait before the response headers; at most the host limit, 10 000 by default",
+  status:
+    "Answer with this status before the route runs, so a write changes nothing; 204 has no body",
+  scenario: "A named recipe; see the API spec for what each one does",
+  body: "Replace the response body with a fault; not with HEAD, DELETE or a simulated 204",
+  step: "The step of the retry-then-ok scenario: 1 and 2 answer 503, 3 the normal response",
+  failRate: "Exploratory: the probability of a simulated 500",
+  fixture: "The fixture pack to read; a memory engine answers 409 to any pack but its own",
+  seed: "Makes failRate and flaky draws reproducible for the same request",
+};
+
+const componentKey = (name: ControlName, place: "Query" | "Header") =>
+  `Mock${name.charAt(0).toUpperCase()}${name.slice(1)}${place}`;
+
+// the control parameters live once in components and every /v1 operation refers to them
+const controlParameters = controlNames.flatMap((name) => [
+  { $ref: `#/components/parameters/${componentKey(name, "Query")}` },
+  { $ref: `#/components/parameters/${componentKey(name, "Header")}` },
+]);
+
+function controlComponents() {
+  return Object.fromEntries(
+    controlNames.flatMap((name) => [
+      [
+        componentKey(name, "Query"),
+        {
+          name: `_mock.${name}`,
+          in: "query",
+          description: `${controlText[name]}. Wins over ${controlHeaders[name]}.`,
+          schema: controlSchemas[name],
+        },
+      ],
+      [
+        componentKey(name, "Header"),
+        {
+          name: controlHeaders[name],
+          in: "header",
+          description: `${controlText[name]}. Ignored when _mock.${name} is given.`,
+          schema: controlSchemas[name],
+        },
+      ],
+    ]),
+  );
+}
+
+const simulatedNoContent = {
+  description: "Only with _mock.status=204 or X-Mock-Status: 204; no body",
+  headers: { "X-Mock-State": mockState, ...controlled },
+};
 const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 
 const query = (name: string, description: string, schema: Record<string, unknown>) => ({
@@ -198,7 +277,7 @@ function jsonResponse(
 ) {
   return {
     description,
-    headers: { "X-Mock-State": mockState, ...headers },
+    headers: { "X-Mock-State": mockState, ...controlled, ...headers },
     content: { "application/json": { schema: typeof schema === "string" ? ref(schema) : schema } },
   };
 }
@@ -206,15 +285,24 @@ function jsonResponse(
 function problemResponse(description: string, fromEngine = true) {
   return {
     description,
-    ...(fromEngine ? { headers: { "X-Mock-State": mockState } } : {}),
+    ...(fromEngine ? { headers: { "X-Mock-State": mockState, ...controlled } } : {}),
     content: { "application/problem+json": { schema: ref("Problem") } },
   };
 }
 
-const unexpected = problemResponse(
-  "Any other status: 405 with Allow for an unsupported method, or a failure from a configured sequence",
+const unexpectedBase = problemResponse(
+  "Any other status: 405 with Allow for an unsupported method, 409 fixture_locked, a status simulated by _mock.status or a scenario, or a failure from a configured sequence",
 );
-const badQuery = problemResponse("An invalid, repeated or unknown query parameter");
+const unexpected = {
+  ...unexpectedBase,
+  headers: {
+    ...unexpectedBase.headers,
+    "Retry-After": { $ref: "#/components/headers/RetryAfter" },
+  },
+};
+const badQuery = problemResponse(
+  "An invalid, repeated or unknown query parameter, or an invalid simulation control",
+);
 
 // a fresh registry turns nested contracts into $refs without shared global state
 function componentSchemas() {
@@ -290,7 +378,9 @@ function resourcePaths(): Record<string, Record<string, Operation>> {
         parameters: [idParameter, ...readParameters(resource)],
         responses: {
           "200": jsonResponse(`The ${noun}, projected or expanded when asked`, view(resource)),
-          "400": problemResponse("Any query parameter"),
+          "400": problemResponse(
+            "Any query parameter but fields or expand, or an invalid simulation control",
+          ),
           "404": missing,
           default: unexpected,
         },
@@ -322,8 +412,11 @@ function resourcePaths(): Record<string, Record<string, Operation>> {
         summary: `Delete one ${noun}; refused while other records refer to it`,
         parameters: [idParameter],
         responses: {
-          "204": { description: "Deleted; no body", headers: { "X-Mock-State": mockState } },
-          "400": problemResponse("Any query parameter"),
+          "204": {
+            description: "Deleted; no body",
+            headers: { "X-Mock-State": mockState, ...controlled },
+          },
+          "400": problemResponse("Any query parameter, or an invalid simulation control"),
           "404": missing,
           ...(Object.keys(resource.relations).length > 0
             ? {
@@ -374,7 +467,9 @@ function body(schema: string) {
 // statuses every create, replace and update can answer besides success and 404
 function writeResponses(singular: string, unique: readonly string[]) {
   return {
-    "400": problemResponse("An empty or malformed JSON body, or any query parameter"),
+    "400": problemResponse(
+      "An empty or malformed JSON body, any query parameter, or an invalid simulation control",
+    ),
     ...(unique.length > 0
       ? {
           "409": problemResponse(
@@ -394,8 +489,20 @@ function writeResponses(singular: string, unique: readonly string[]) {
   };
 }
 
+// every /v1 operation takes the controls and can answer a simulated 204
+function withControls(paths: Record<string, Record<string, Operation>>) {
+  for (const operations of Object.values(paths)) {
+    for (const operation of Object.values(operations)) {
+      operation.parameters = [...((operation.parameters as unknown[]) ?? []), ...controlParameters];
+      const responses = operation.responses as Record<string, unknown>;
+      if (!("204" in responses)) responses["204"] = simulatedNoContent;
+    }
+  }
+  return paths;
+}
+
 export function createOpenApiDocument(version: OpenApiVersion): OpenApiDocument {
-  const paths = resourcePaths();
+  const paths = withControls(resourcePaths());
 
   return {
     openapi: version,
@@ -408,11 +515,25 @@ export function createOpenApiDocument(version: OpenApiVersion): OpenApiDocument 
     paths,
     components: {
       schemas: componentSchemas(),
+      parameters: controlComponents(),
       headers: {
         MockState: {
           description: "Whether the engine stores writes (memory) or only answers them (stateless)",
           required: true,
           schema: { type: "string", enum: ["memory", "stateless"] },
+        },
+        MockApplied: {
+          description:
+            "The simulation controls that shaped this response, resolved: for example scenario=maintenance, status=503",
+          schema: { type: "string" },
+        },
+        NoStore: {
+          description: "no-store whenever a simulation control shaped the response",
+          schema: { type: "string", const: "no-store" },
+        },
+        RetryAfter: {
+          description: "Seconds to wait before retrying, with a simulated 429 or 503",
+          schema: { type: "integer", minimum: 0 },
         },
       },
     },
