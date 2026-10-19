@@ -1,4 +1,12 @@
-import { corePack, createEngine, pageSchema, userSchema } from "@loadstate/core";
+import {
+  capabilitiesSchema,
+  catalogSchema,
+  corePack,
+  createEngine,
+  echoSchema,
+  pageSchema,
+  userSchema,
+} from "@loadstate/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, maxBodyBytes } from "../src/app.js";
 
@@ -192,6 +200,83 @@ describe("engine routes", () => {
   });
 });
 
+describe("CORS over Hono", () => {
+  it("lets any origin read every response, health and errors included", async () => {
+    for (const path of ["/v1/users", "/healthz", "/nope", "/img/64", "/docs"]) {
+      const response = await app.request(path, { headers: { origin: "https://app.test" } });
+      expect([path, response.headers.get("access-control-allow-origin")]).toEqual([path, "*"]);
+      expect(response.headers.get("access-control-expose-headers")).toBe(
+        "Link, Location, Retry-After, Allow, X-Mock-State, X-Mock-Applied",
+      );
+      expect(response.headers.get("access-control-allow-credentials")).toBeNull();
+    }
+    const tooLarge = await app.request("/v1/users", {
+      method: "POST",
+      headers: { "content-type": "application/json", "content-length": String(maxBodyBytes + 1) },
+      body: " ".repeat(maxBodyBytes + 1),
+    });
+    expect(tooLarge.status).toBe(413);
+    expect(tooLarge.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("answers a preflight before the engine, so no sequence step is spent", async () => {
+    const engine = createEngine({ state: "memory", sequences: { "PATCH /v1/users/:id": [503] } });
+    const handle = vi.spyOn(engine, "handle");
+    const stateful = createApp({ engine });
+    const answer = await stateful.request("/v1/users/1", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://app.test",
+        "access-control-request-method": "PATCH",
+        "access-control-request-headers": "content-type, x-mock-delay",
+      },
+    });
+    expect(answer.status).toBe(204);
+    expect(answer.headers.get("access-control-allow-methods")).toBe(
+      "GET, HEAD, POST, PUT, PATCH, DELETE",
+    );
+    expect(answer.headers.get("access-control-allow-headers")).toContain("X-Mock-Delay");
+    expect(answer.headers.get("access-control-max-age")).toBe("600");
+    expect(handle).not.toHaveBeenCalled();
+    const patched = await stateful.request("/v1/users/1", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(patched.status).toBe(503);
+  });
+
+  it("answers only listed origins under an allowlist and varies by Origin", async () => {
+    const listed = createApp({ cors: { origins: ["https://app.test"] } });
+    const allowed = await listed.request("/img/64", { headers: { origin: "https://app.test" } });
+    expect(allowed.headers.get("access-control-allow-origin")).toBe("https://app.test");
+    expect(allowed.headers.get("vary")).toMatch(/X-Mock-Seed, Origin$/);
+    const refused = await listed.request("/v1/users", { headers: { origin: "https://evil.test" } });
+    expect(refused.status).toBe(200);
+    expect(refused.headers.get("access-control-allow-origin")).toBeNull();
+    expect(refused.headers.get("vary")).toBe("Origin");
+    expect(() => createApp({ cors: { origins: ["https://app.test/"] } })).toThrow(/bare origin/);
+  });
+
+  it("keeps OPTIONS without CORS headers a 405", async () => {
+    expect((await app.request("/v1/users", { method: "OPTIONS" })).status).toBe(405);
+  });
+});
+
+describe("discovery over Hono", () => {
+  it("serves the catalog, capabilities, documents and docs", async () => {
+    const catalog = catalogSchema.parse(await (await app.request("/v1")).json());
+    expect(catalog.links.docs).toBe("http://localhost/docs");
+    const described = capabilitiesSchema.parse(await (await app.request("/capabilities")).json());
+    expect(described.state).toBe("stateless");
+    const document = (await (await app.request("/openapi.json")).json()) as { openapi: string };
+    expect(document.openapi).toBe("3.1.2");
+    const docs = await app.request("/docs");
+    expect(docs.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await docs.text()).toContain('data-url="./openapi.json"');
+  });
+});
+
 describe("images over Hono", () => {
   it("serves placeholder and avatar SVGs with cache and safety headers", async () => {
     const image = await app.request("/img/600x400?text=Hero");
@@ -281,5 +366,69 @@ describe("request body limit", () => {
       code: "body_too_large",
     });
     expect(handle).not.toHaveBeenCalled();
+  });
+});
+
+describe("echo over Hono", () => {
+  it("echoes a JSON body, names credentials and counts received bytes", async () => {
+    const response = await app.request("/v1/_utils/echo?x=1", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer secret-token" },
+      body: JSON.stringify({ hello: "wörld" }),
+    });
+    const echoed = echoSchema.parse(await response.json());
+    expect(echoed).toMatchObject({
+      method: "POST",
+      query: { x: ["1"] },
+      redacted: ["authorization"],
+      body: { hello: "wörld" },
+      bodyBytes: 18,
+    });
+    expect(JSON.stringify(echoed).includes("secret")).toBe(false);
+  });
+
+  it("counts a byte-order mark and an invalid byte as sent", async () => {
+    const send = async (bytes: number[]) =>
+      echoSchema.parse(
+        await (
+          await app.request("/v1/_utils/echo", {
+            method: "POST",
+            headers: { "content-type": "text/plain" },
+            body: new Uint8Array(bytes),
+          })
+        ).json(),
+      ).bodyBytes;
+    expect(await send([0xef, 0xbb, 0xbf, 0x61])).toBe(4);
+    expect(await send([0xff])).toBe(1);
+  });
+
+  it("answers a body fault on the 204 fixture with 400, not a broken response", async () => {
+    const response = await app.request("/v1/_utils/status/204?_mock.body=html");
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("echo limits over Hono", () => {
+  it("answers an oversized echo write with 413 before the engine", async () => {
+    const response = await app.request("/v1/_utils/echo", {
+      method: "PATCH",
+      headers: { "content-type": "text/plain", "content-length": String(maxBodyBytes + 1) },
+      body: " ".repeat(maxBodyBytes + 1),
+    });
+    expect(response.status).toBe(413);
+    expect(response.headers.get("content-type")).toBe("application/problem+json");
+    expect(response.headers.get("x-mock-state")).toBeNull();
+  });
+});
+
+describe("echo JSON over Hono", () => {
+  it("refuses a JSON body that is only a byte-order mark", async () => {
+    const response = await app.request("/v1/_utils/echo", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new Uint8Array([0xef, 0xbb, 0xbf]),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ code: "invalid_json" });
   });
 });

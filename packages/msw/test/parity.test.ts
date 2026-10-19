@@ -34,15 +34,28 @@ const observedHeaders = [
   "cache-control",
   "retry-after",
 ];
+// each transport adds its own accept, user-agent and content-length, so an echo is compared
+// on the headers the scenario sets
+const echoCompared = ["content-type", "x-request-id"];
+
+// a body sent as it is, with its own media type, instead of as JSON
+interface Raw {
+  raw: string;
+  type: string;
+}
+const isRaw = (value: unknown): value is Raw =>
+  typeof value === "object" && value !== null && "raw" in value;
+
+function encode(json: unknown): { type: string; body: string } {
+  return isRaw(json)
+    ? { type: json.type, body: json.raw }
+    : { type: "application/json", body: JSON.stringify(json) };
+}
 
 function init(method: string, json?: unknown, headers: Record<string, string> = {}): RequestInit {
-  return json === undefined
-    ? { method, headers }
-    : {
-        method,
-        headers: { "content-type": "application/json", ...headers },
-        body: JSON.stringify(json),
-      };
+  if (json === undefined) return { method, headers };
+  const { type, body } = encode(json);
+  return { method, headers: { "content-type": type, ...headers }, body };
 }
 
 // body faults are not JSON, so they compare as text
@@ -65,7 +78,18 @@ async function observe(response: Response, base: string) {
         response.headers.get(name)?.replaceAll(base, "<base>") ?? null,
       ]),
     ),
-    body: text === "" ? null : parse(text),
+    body: comparable(text === "" ? null : parse(text)),
+  };
+}
+
+function comparable(body: unknown): unknown {
+  const isEcho =
+    typeof body === "object" && body !== null && "bodyBytes" in body && "headers" in body;
+  if (!isEcho) return body;
+  const headers = Object.entries(body.headers as Record<string, string>);
+  return {
+    ...body,
+    headers: Object.fromEntries(headers.filter(([name]) => echoCompared.includes(name))),
   };
 }
 
@@ -118,6 +142,22 @@ async function runScenario(engine: Engine, base: string, send: Send) {
   await step("HEAD", "/img/avatar/jane-doe?style=identicon");
   await step("GET", "/img/5x400");
   await step("GET", "/img/600?_mock.status=404");
+  await step("GET", "/v1");
+  await step("GET", "/capabilities");
+  await step("GET", "/v1/_utils/status/401");
+  await step("HEAD", "/openapi.json");
+  await step(
+    "POST",
+    "/v1/_utils/echo?tag=a&tag=b",
+    { hello: "wörld" },
+    { authorization: "Bearer parity-token", "x-request-id": "parity-1" },
+  );
+  await step(
+    "PUT",
+    "/v1/_utils/echo",
+    { raw: "plain text ✓", type: "text/plain; charset=utf-8" },
+    { "x-api-key": "parity-key" },
+  );
   engine.reset();
   await step("GET", `/v1/users/${nextId}`);
   await step("GET", `/v1/users/${nextId}`);
@@ -131,14 +171,17 @@ async function inProcess() {
   const base = "http://in-process.test";
   return runScenario(engine, base, async (method, path, json, sent = {}) => {
     const url = new URL(path, base);
+    const encoded = json === undefined ? undefined : encode(json);
+    // a transport passes Content-Type among the request headers too
+    const all = encoded ? { "content-type": encoded.type, ...sent } : sent;
     const { status, headers, body } = serialize(
       engine.handle({
         method,
         path: url.pathname,
         query: url.searchParams,
-        headers: Object.entries(sent),
-        contentType: json === undefined ? undefined : "application/json",
-        body: json === undefined ? undefined : JSON.stringify(json),
+        headers: Object.entries(all),
+        contentType: encoded?.type,
+        body: encoded?.body,
         baseUrl: base,
       }),
     );
@@ -182,8 +225,8 @@ describe("adapter parity", () => {
 
     expect(reference.map((result) => result.status)).toEqual([
       200, 201, 503, 503, 200, 200, 422, 200, 200, 409, 409, 204, 404, 405, 404, 404, 200, 200, 200,
-      200, 200, 200, 200, 400, 503, 200, 200, 200, 409, 422, 400, 200, 200, 400, 404, 503, 503, 404,
-      200,
+      200, 200, 200, 200, 400, 503, 200, 200, 200, 409, 422, 400, 200, 200, 400, 404, 200, 200, 401,
+      200, 200, 200, 503, 503, 404, 200,
     ]);
     expect(reference[1]?.headers.location).toBe(`/v1/users/${nextId}`);
     expect(reference[4]?.body).toEqual(reference[1]?.body);
@@ -242,7 +285,35 @@ describe("adapter parity", () => {
     });
     expect(reference[33]?.body).toMatchObject({ code: "invalid_image" });
     expect(reference[34]?.headers["cache-control"]).toBe("no-store");
-    expect(reference[38]?.body).toMatchObject({ meta: { total: userCount } });
+    expect(reference[35]?.body).toMatchObject({
+      links: { docs: "<base>/docs" },
+      resources: expect.arrayContaining([expect.objectContaining({ href: "<base>/v1/users" })]),
+    });
+    expect(reference[36]?.body).toMatchObject({ state: "memory" });
+    expect(reference[37]?.headers).toMatchObject({ "cache-control": "no-store" });
+    expect(reference[38]).toMatchObject({
+      body: null,
+      headers: { "content-type": "application/json" },
+    });
+    expect(reference[39]?.body).toEqual({
+      method: "POST",
+      path: "/v1/_utils/echo",
+      query: { tag: ["a", "b"] },
+      headers: { "content-type": "application/json", "x-request-id": "parity-1" },
+      redacted: ["authorization"],
+      body: { hello: "wörld" },
+      bodyText: null,
+      truncated: false,
+      bodyBytes: 18,
+    });
+    expect(reference[40]?.body).toMatchObject({
+      headers: { "content-type": "text/plain; charset=utf-8" },
+      redacted: ["x-api-key"],
+      body: null,
+      bodyText: "plain text ✓",
+      bodyBytes: 14,
+    });
+    expect(reference[44]?.body).toMatchObject({ meta: { total: userCount } });
     for (const result of reference) expect(result.headers["x-mock-state"]).toBe("memory");
 
     expect(http).toEqual(reference);

@@ -80,6 +80,57 @@ try {
   assert.ok((await placeholder.text()).includes(">Hero</text>"));
   assert.equal((await fetch(`${base}/img/600x400?_mock.status=404`)).status, 404);
 
+  // discovery and CORS
+  const catalog = await (await fetch(`${base}/v1`)).json();
+  assert.equal(catalog.links.capabilities, `${base}/capabilities`);
+  const described = await (await fetch(`${base}/capabilities`)).json();
+  assert.equal(described.state, "stateless");
+  const document = await (await fetch(`${base}/openapi.json`)).json();
+  assert.equal(document.openapi, "3.1.2");
+  const docs = await fetch(`${base}/docs`);
+  const scripts = docs.headers
+    .get("content-security-policy")
+    .split("; ")
+    .find((part) => part.startsWith("script-src "));
+  // exactly one source: the pinned Scalar file
+  assert.equal(scripts.split(" ").length, 2);
+  assert.ok(scripts.startsWith("script-src https://cdn.jsdelivr.net/npm/@scalar/api-reference@"));
+  assert.ok(scripts.endsWith("/dist/browser/standalone.js"));
+  const preflighted = await fetch(`${base}/v1/users`, {
+    method: "OPTIONS",
+    headers: { origin: "https://app.test", "access-control-request-method": "POST" },
+  });
+  assert.equal(preflighted.status, 204);
+  assert.ok(preflighted.headers.get("access-control-allow-headers").includes("X-Mock-Status"));
+  const crossOrigin = await fetch(`${base}/v1/_utils/status/503`, {
+    headers: { origin: "https://app.test" },
+  });
+  assert.equal(crossOrigin.status, 503);
+  assert.equal(crossOrigin.headers.get("access-control-allow-origin"), "*");
+  assert.equal(crossOrigin.headers.get("retry-after"), "60");
+  const echoed = await (
+    await fetch(`${base}/v1/_utils/echo?tag=a&tag=b`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer smoke-token" },
+      body: JSON.stringify({ hello: "wörld" }),
+    })
+  ).json();
+  assert.deepEqual(echoed.query, { tag: ["a", "b"] });
+  assert.deepEqual(echoed.redacted, ["authorization"]);
+  assert.deepEqual(echoed.body, { hello: "wörld" });
+  assert.equal(echoed.bodyBytes, 18);
+  assert.ok(!JSON.stringify(echoed).includes("smoke-token"));
+  // a byte-order mark is dropped from the text but counted as received
+  const text = await (
+    await fetch(`${base}/v1/_utils/echo`, {
+      method: "PUT",
+      headers: { "content-type": "text/plain" },
+      body: new Uint8Array([0xef, 0xbb, 0xbf, 0x61]),
+    })
+  ).json();
+  assert.equal(text.bodyText, "a");
+  assert.equal(text.bodyBytes, 4);
+
   const nested = await fetch(`${base}/v1/categories/2/products?limit=1`);
   assert.equal(nested.status, 200);
   assert.equal((await nested.json()).data[0].categoryId, 2);

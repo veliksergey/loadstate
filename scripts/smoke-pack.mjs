@@ -80,6 +80,32 @@ try {
   assert.equal(avatar.status, 200);
   assert.equal(avatar.headers.get("content-type"), "image/svg+xml");
 
+  const capabilities = await (await fetch(server.url + "/capabilities")).json();
+  assert.equal(capabilities.state, "memory");
+  assert.equal((await (await fetch(server.url + "/openapi.json")).json()).openapi, "3.1.2");
+  const echoed = await (
+    await fetch(server.url + "/v1/_utils/echo?tag=a&tag=b", {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer smoke-token" },
+      body: JSON.stringify({ hello: "wörld" }),
+    })
+  ).json();
+  assert.deepEqual(echoed.query, { tag: ["a", "b"] });
+  assert.deepEqual(echoed.redacted, ["authorization"]);
+  assert.deepEqual(echoed.body, { hello: "wörld" });
+  assert.equal(echoed.bodyBytes, 18);
+  assert.ok(!JSON.stringify(echoed).includes("smoke-token"));
+  // a byte-order mark is dropped from the text but counted as received
+  const text = await (
+    await fetch(server.url + "/v1/_utils/echo", {
+      method: "PUT",
+      headers: { "content-type": "text/plain" },
+      body: new Uint8Array([0xef, 0xbb, 0xbf, 0x61]),
+    })
+  ).json();
+  assert.equal(text.bodyText, "a");
+  assert.equal(text.bodyBytes, 4);
+
   const empty = await fetch(server.url + "/v1/users?_mock.scenario=empty");
   assert.equal((await empty.json()).meta.total, 0);
   assert.equal(empty.headers.get("x-mock-applied"), "scenario=empty");

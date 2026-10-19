@@ -11,6 +11,13 @@ import {
   simulatedStatuses,
 } from "./controls.js";
 import { maxCursorLength } from "./cursor.js";
+import {
+  capabilitiesSchema,
+  catalogSchema,
+  echoSchema,
+  statusFixtureSchema,
+  statusFixtures,
+} from "./discovery.js";
 import type { FieldKind } from "./fields.js";
 import { fixturePacks } from "./fixtures/index.js";
 import {
@@ -308,6 +315,11 @@ const unexpected = {
     "Retry-After": { $ref: "#/components/headers/RetryAfter" },
   },
 };
+// answered by the HTTP server before the engine runs, so it has no engine headers
+const tooLarge = problemResponse(
+  `A request body over ${maxBodyBytes} bytes, rejected by the HTTP server`,
+  false,
+);
 const badQuery = problemResponse(
   "An invalid, repeated or unknown query parameter, or an invalid simulation control",
 );
@@ -332,6 +344,10 @@ function componentSchemas() {
     registry.add(input.partial(), { id: `${resource.singular}Patch` });
   }
   registry.add(problemSchema, { id: "Problem" });
+  registry.add(catalogSchema, { id: "Catalog" });
+  registry.add(capabilitiesSchema, { id: "Capabilities" });
+  registry.add(echoSchema, { id: "Echo" });
+  registry.add(statusFixtureSchema, { id: "StatusFixture" });
 
   const { schemas } = z.toJSONSchema(registry, { uri: (id) => `#/components/schemas/${id}` });
   // the document's dialect applies; component schemas carry no $schema or $id
@@ -485,10 +501,7 @@ function writeResponses(singular: string, unique: readonly string[]) {
           ),
         }
       : {}),
-    "413": problemResponse(
-      `A request body over ${maxBodyBytes} bytes, rejected by the HTTP server`,
-      false,
-    ),
+    "413": tooLarge,
     "415": problemResponse("A body that is not application/json"),
     "422": problemResponse(
       "A body with missing, invalid, unknown or read-only fields, a reference to a missing record, or a structural rule broken",
@@ -615,6 +628,141 @@ function imagePaths(): Record<string, Record<string, Operation>> {
   };
 }
 
+function utilityPaths(): Record<string, Record<string, Operation>> {
+  const echoes = Object.fromEntries(
+    (["get", "post", "put", "patch", "delete"] as const).map((method) => [
+      method,
+      {
+        operationId: `echo${capitalize(method)}`,
+        summary: "Echo the request: method, query, allowlisted headers and body",
+        // every method but GET may carry a body, which the echo reads
+        ...(method === "get"
+          ? {}
+          : {
+              requestBody: {
+                required: false,
+                content: { "*/*": { schema: {} } },
+              },
+            }),
+        responses: {
+          "200": jsonResponse(
+            "What the server received; credentials are named, never shown",
+            "Echo",
+          ),
+          "400": problemResponse("A malformed JSON body, or an invalid simulation control"),
+          ...(method === "get" ? {} : { "413": tooLarge }),
+          default: unexpected,
+        },
+      },
+    ]),
+  );
+  const noStore = {
+    "Cache-Control": { required: true, schema: { type: "string", const: "no-store" } },
+  };
+  return {
+    "/v1": {
+      get: {
+        operationId: "getCatalog",
+        summary: "The resource catalog: each resource with its count, query rules and links",
+        responses: {
+          "200": jsonResponse("The catalog of the selected pack", "Catalog"),
+          "400": problemResponse("Any query parameter but a simulation control"),
+          default: unexpected,
+        },
+      },
+    },
+    "/v1/_utils/echo": echoes,
+    "/v1/_utils/status/{code}": {
+      get: {
+        operationId: "getStatusFixture",
+        summary: `A status with the headers its definition requires: ${statusFixtures.join(", ")}`,
+        parameters: [
+          {
+            name: "code",
+            in: "path",
+            required: true,
+            schema: { type: "string", pattern: "^[0-9]{3}$" },
+          },
+        ],
+        responses: {
+          "200": jsonResponse("200 OK", "StatusFixture", noStore),
+          "201": jsonResponse("201 Created", "StatusFixture", {
+            ...noStore,
+            Location: { required: true, schema: { type: "string" } },
+          }),
+          "202": jsonResponse("202 Accepted", "StatusFixture", noStore),
+          "204": {
+            description: "The 204 fixture, or _mock.status=204; no body",
+            headers: { "X-Mock-State": mockState, ...controlled },
+          },
+          "400": problemResponse(
+            "The 400 fixture, a three-digit status without a fixture, or an invalid simulation control",
+          ),
+          default: problemResponse(
+            "The error fixture asked for, with WWW-Authenticate on 401, Allow on 405 and Retry-After on 429 and 503",
+          ),
+        },
+      },
+    },
+  };
+}
+
+const diagnosticHeaders = { "X-Mock-State": mockState };
+const diagnosticQuery = problemResponse("Any query parameter: diagnostic routes take none");
+
+function diagnosticPaths(): Record<string, Record<string, Operation>> {
+  const document = (version: string) => ({
+    description: `The OpenAPI ${version} document`,
+    headers: diagnosticHeaders,
+    content: { "application/json": { schema: { type: "object" } } },
+  });
+  return {
+    "/capabilities": {
+      get: {
+        operationId: "getCapabilities",
+        summary: "Versions, packs, controls, limits and modes of this server; never simulated",
+        responses: {
+          "200": {
+            description: "What this server supports",
+            headers: diagnosticHeaders,
+            content: { "application/json": { schema: ref("Capabilities") } },
+          },
+          "400": diagnosticQuery,
+          default: problemResponse("405 with Allow for a method other than GET or HEAD"),
+        },
+      },
+    },
+    "/openapi.json": {
+      get: {
+        operationId: "getOpenApi",
+        summary: "This document, OpenAPI 3.1.2",
+        responses: { "200": document("3.1.2"), "400": diagnosticQuery },
+      },
+    },
+    "/openapi-3.2.json": {
+      get: {
+        operationId: "getOpenApi32",
+        summary: "This document, OpenAPI 3.2.1",
+        responses: { "200": document("3.2.1"), "400": diagnosticQuery },
+      },
+    },
+    "/docs": {
+      get: {
+        operationId: "getDocs",
+        summary: "An interactive reference for this document",
+        responses: {
+          "200": {
+            description: "An HTML page that loads a pinned, integrity-checked Scalar release",
+            headers: diagnosticHeaders,
+            content: { "text/html; charset=utf-8": { schema: { type: "string" } } },
+          },
+          "400": diagnosticQuery,
+        },
+      },
+    },
+  };
+}
+
 // every /v1 operation takes the controls and can answer a simulated 204
 function withControls(paths: Record<string, Record<string, Operation>>) {
   for (const operations of Object.values(paths)) {
@@ -628,7 +776,10 @@ function withControls(paths: Record<string, Record<string, Operation>>) {
 }
 
 export function createOpenApiDocument(version: OpenApiVersion): OpenApiDocument {
-  const paths = withControls({ ...resourcePaths(), ...imagePaths() });
+  const paths = {
+    ...withControls({ ...utilityPaths(), ...resourcePaths(), ...imagePaths() }),
+    ...diagnosticPaths(),
+  };
 
   return {
     openapi: version,

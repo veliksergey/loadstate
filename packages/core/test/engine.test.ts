@@ -373,7 +373,7 @@ describe("sequences", () => {
 
   it("rejects an unknown route key", () => {
     expect(() => memory({ sequences: { "GET /v1/widgets": [503] } })).toThrow(
-      /^Unknown sequence route "GET \/v1\/widgets"\. Use one of: GET \/v1\/users, POST \/v1\/users, GET \/v1\/users\/:id, PUT \/v1\/users\/:id, .*DELETE \/v1\/todos\/:id, GET \/img\/:size, GET \/img\/avatar\/:name\.$/,
+      /^Unknown sequence route "GET \/v1\/widgets"\. Use one of: GET \/v1\/users, POST \/v1\/users, GET \/v1\/users\/:id, PUT \/v1\/users\/:id, .*DELETE \/v1\/todos\/:id.*, GET \/v1\/_utils\/status\/:code\.$/,
     );
   });
 

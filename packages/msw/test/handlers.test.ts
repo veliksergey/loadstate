@@ -16,6 +16,30 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
+describe("CORS and discovery through MSW", () => {
+  it("adds CORS headers and answers preflights before the engine", async () => {
+    const response = await fetch("http://api.loadstate.test/api/v1/users?limit=1", {
+      headers: { origin: "https://app.test" },
+    });
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    const handle = vi.spyOn(engine, "handle");
+    const answer = await fetch("http://api.loadstate.test/api/v1/users", {
+      method: "OPTIONS",
+      headers: { origin: "https://app.test", "access-control-request-method": "POST" },
+    });
+    expect(answer.status).toBe(204);
+    expect(answer.headers.get("access-control-allow-headers")).toContain("X-Mock-Status");
+    expect(handle).not.toHaveBeenCalled();
+  });
+
+  it("serves the catalog and the documents under the base path", async () => {
+    const catalog = await (await fetch("http://api.loadstate.test/api/v1")).json();
+    expect(catalog.links.openapi).toBe("http://api.loadstate.test/api/openapi.json");
+    const document = await (await fetch(catalog.links.openapi)).json();
+    expect(document.openapi).toBe("3.1.2");
+  });
+});
+
 describe("images through MSW", () => {
   it("serves image URLs under the base path", async () => {
     const response = await fetch("http://api.loadstate.test/api/img/120x80?style=gradient");
@@ -92,6 +116,24 @@ describe("createHandlers", () => {
   ])("treats %s as unhandled", async (url) => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     await expect(fetch(url)).rejects.toThrow();
+  });
+});
+
+describe("echo through MSW", () => {
+  it("echoes a JSON body and counts received bytes", async () => {
+    const response = await fetch("http://api.loadstate.test/api/v1/_utils/echo", {
+      method: "PUT",
+      headers: { "content-type": "application/json", cookie: "session=secret" },
+      body: JSON.stringify({ hello: "wörld" }),
+    });
+    const echoed = await response.json();
+    expect(echoed).toMatchObject({ body: { hello: "wörld" }, bodyBytes: 18, redacted: ["cookie"] });
+    const bom = await fetch("http://api.loadstate.test/api/v1/_utils/echo", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: new Uint8Array([0xef, 0xbb, 0xbf, 0x61]),
+    });
+    expect((await bom.json()).bodyBytes).toBe(4);
   });
 });
 

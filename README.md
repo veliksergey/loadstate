@@ -20,13 +20,18 @@ pnpm smoke:pack                              # pack and use the packages from a 
 pnpm smoke:worker                            # run the Workers entry under local Wrangler
 pnpm --filter @loadstate/server start        # after a build; PORT defaults to 4000
 pnpm --filter @loadstate/server dev:worker   # the Workers entry, locally
-pnpm --filter @loadstate/core fixtures:generate   # regenerate the fixture pack
+pnpm --filter @loadstate/core fixtures:generate   # regenerate the fixture packs
+pnpm --filter @loadstate/core openapi:generate    # regenerate the served OpenAPI document
 ```
 
 The server listens on `127.0.0.1` only.
 
 | Route | Result |
 |---|---|
+| `GET /v1` | The catalog: resources, counts, query rules and links |
+| `GET /capabilities` | Versions, packs, controls and limits of this server |
+| `GET /openapi.json`, `GET /docs` | The generated OpenAPI document and an interactive reference |
+| `ANY /v1/_utils/echo`, `GET /v1/_utils/status/:code` | Echo a request; answer any common status with its protocol headers |
 | `GET /healthz` | `{ "status": "ok" }` |
 | `GET /readyz` | `{ "status": "ready" }` |
 | `GET /v1/:resource` | `{ data, meta }` list of `users`, `posts`, `comments`, `categories`, `products` or `todos`, with a `Link` header. Offset (`limit`, `offset`), page (`page`, `perPage`) or cursor (`pagination=cursor`, then `cursor`) pagination; `q` search; filters such as `status=active` or `priceMinor_gte=1000`; `sort=-createdAt,title`; `fields` and `expand` |

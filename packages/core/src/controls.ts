@@ -51,6 +51,7 @@ export type BodyFault = (typeof bodyFaults)[number];
 
 export const retryAfterSeconds: Partial<Record<number, number>> = { 429: 5, 503: 60 };
 export const retrySteps = 3;
+export const maxSeed = 0xffffffff;
 
 export interface Controls {
   delay?: number | undefined;
@@ -80,6 +81,8 @@ export interface ParsedControls {
   query: [string, string][];
   // true when any control was given, even one that resolves to the defaults
   given: boolean;
+  // the query parameter or header each given control was read from
+  fields: Partial<Record<ControlName, string>>;
 }
 
 export interface ControlLimits {
@@ -208,9 +211,9 @@ export function parseControls(
       : invalid(field, `must be one of: ${limits.fixtures.join(", ")}`),
   );
   controls.seed = read("seed", (value, field) =>
-    /^\d{1,10}$/.test(value) && Number(value) <= 0xffffffff
+    /^\d{1,10}$/.test(value) && Number(value) <= maxSeed
       ? Number(value)
-      : invalid(field, "must be a whole number from 0 to 4294967295"),
+      : invalid(field, `must be a whole number from 0 to ${maxSeed}`),
   );
 
   for (const name of controlNames) if (controls[name] === undefined) delete controls[name];
@@ -244,7 +247,8 @@ export function parseControls(
   }
 
   if (issues.length > 0) return { ok: false, issues };
-  return { ok: true, value: { controls, query: rest, given: raw.size > 0 } };
+  const fields = Object.fromEntries([...raw].map(([name, entry]) => [name, entry.field]));
+  return { ok: true, value: { controls, query: rest, given: raw.size > 0, fields } };
 }
 
 function unknown(name: string, known: readonly string[]): ControlIssue {

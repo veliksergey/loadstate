@@ -7,10 +7,12 @@ import {
   resolvePlan,
   type SimulatedStatus,
 } from "./controls.js";
+import { capabilities, catalog, docsPage, docsPolicy, echo, statusFixture } from "./discovery.js";
 import { defaultFixture, type FixturePack, fixturePacks } from "./fixtures/index.js";
 import { deepFreeze } from "./freeze.js";
 import { parseAvatar, parsePlaceholder, renderAvatar, renderPlaceholder } from "./images.js";
 import { listRows } from "./list.js";
+import { openApiJson } from "./openapi.generated.js";
 import {
   parseListQuery,
   parseNoQuery,
@@ -43,6 +45,8 @@ export interface EngineRequest {
   query?: Iterable<readonly [string, string]> | undefined;
   contentType?: string | undefined;
   body?: string | undefined;
+  // bytes the adapter received before decoding the body
+  bodyBytes?: number | undefined;
   // trusted absolute base for image URLs; without it they stay root-relative
   baseUrl?: string | undefined;
   // request headers; only the X-Mock-* controls are read
@@ -93,12 +97,22 @@ interface RouteRequest extends EngineRequest {
 interface Route {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   pattern: string;
+  // a diagnostic read: no controls, no sequences, no query parameters
+  diagnostic: boolean;
   run(params: Params, request: RouteRequest, data: Data): EngineResponse;
 }
 
 const route = (method: Route["method"], pattern: string, run: Route["run"]): Route => ({
   method,
   pattern,
+  diagnostic: false,
+  run,
+});
+
+const diagnostic = (pattern: string, run: Route["run"]): Route => ({
+  method: "GET",
+  pattern,
+  diagnostic: true,
   run,
 });
 
@@ -151,6 +165,59 @@ export function createEngine({
       const parsed = parseAvatar(params.name ?? "", request.query ?? []);
       return parsed.ok ? svg(renderAvatar(parsed.value)) : invalidImage(parsed.issues);
     }),
+    route("GET", "/v1", (_, request, data) => {
+      const query = parseNoQuery(request.query ?? []);
+      if (!query.ok) return invalidQuery(query);
+      return json(200, catalog(packNamed(data.pack), data.store, request.baseUrl));
+    }),
+    ...(["GET", "POST", "PUT", "PATCH", "DELETE"] as const).map((method) =>
+      route(method, "/v1/_utils/echo", (_, request) =>
+        echo({
+          method: request.method,
+          path: request.path,
+          query: request.query ?? [],
+          headers: request.headers,
+          contentType: request.contentType,
+          body: request.body,
+          bodyBytes: request.bodyBytes,
+        }),
+      ),
+    ),
+    route("GET", "/v1/_utils/status/:code", (params, request) => {
+      const query = parseNoQuery(request.query ?? []);
+      if (!query.ok) return invalidQuery(query);
+      return statusFixture(Number(params.code));
+    }),
+    diagnostic("/capabilities", (_, request) =>
+      json(
+        200,
+        capabilities({
+          state,
+          packs: Object.values(fixturePacks),
+          ownPack: runPack.manifest.id,
+          ownCounts: countsOf(dataFor(runPack.manifest.id, false).store),
+          maxDelayMs,
+          baseUrl: request.baseUrl,
+        }),
+        { "cache-control": "no-store" },
+      ),
+    ),
+    diagnostic("/openapi.json", () => document(openApiJson)),
+    // the two versions differ only in the version field, which comes first
+    diagnostic("/openapi-3.2.json", () =>
+      document(openApiJson.replace('{"openapi":"3.1.2"', '{"openapi":"3.2.1"')),
+    ),
+    diagnostic("/docs", () => ({
+      status: 200,
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "public, max-age=300",
+        "content-security-policy": docsPolicy,
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+      },
+      rawBody: docsPage,
+    })),
   ];
   const plan = readSequences(sequences, routes);
 
@@ -197,9 +264,16 @@ export function createEngine({
       return { ...response, headers: { ...response.headers, allow: allowed.join(", ") } };
     }
 
-    // read once: a caller may pass a one-shot iterable
+    // read once: a caller may pass one-shot iterables
     const pairs = [...(request.query ?? [])];
-    const parsed = parseControls(pairs, request.headers, {
+    const headers = request.headers === undefined ? undefined : [...request.headers];
+    if (hit.route.diagnostic) {
+      // diagnostic reads are never simulated, so controls and sequences do not apply
+      const query = parseNoQuery(pairs);
+      if (!query.ok) return invalidQuery(query);
+      return hit.route.run(hit.params, { ...request, headers, query: pairs, links: pairs }, run);
+    }
+    const parsed = parseControls(pairs, headers, {
       maxDelayMs,
       fixtures: Object.keys(fixturePacks),
       method: request.method,
@@ -212,9 +286,9 @@ export function createEngine({
         parsed.issues,
       );
     }
-    const { controls, query, given } = parsed.value;
+    const { controls, query, given, fields } = parsed.value;
     // links repeat the query controls, so following one keeps the same pack and recipe
-    const routeRequest: RouteRequest = { ...request, query, links: pairs };
+    const routeRequest: RouteRequest = { ...request, headers, query, links: pairs };
 
     if (
       state === "memory" &&
@@ -248,6 +322,17 @@ export function createEngine({
         : resolved.validation
           ? simulatedValidation(hit.route.pattern)
           : (nextFailure(key) ?? hit.route.run(hit.params, routeRequest, data));
+    // a route that answers 204 by itself, such as the status fixture, has no body to fault
+    if (resolved.body !== undefined && response.status === 204) {
+      const field = fields.body ?? "_mock.body";
+      return problem(400, "invalid_controls", "The simulation controls are not valid.", [
+        {
+          field,
+          code: "incompatible_controls",
+          message: `"${field}" cannot apply to a 204 response, which has no body.`,
+        },
+      ]);
+    }
     const shaped = given ? applyPlan(response, resolved) : response;
     // a sequenced route answers by run position, so no cache may keep any of its answers
     return plan.has(key)
@@ -460,6 +545,20 @@ export function createEngine({
   return { state, handle, reset };
 }
 
+function countsOf(store: Store): Record<ResourceName, number> {
+  return Object.fromEntries(
+    resources.map((resource) => [resource.name, store[resource.name].length]),
+  ) as Record<ResourceName, number>;
+}
+
+function document(text: string): EngineResponse {
+  return {
+    status: 200,
+    headers: { "content-type": "application/json", "cache-control": "public, max-age=300" },
+    rawBody: text,
+  };
+}
+
 function packNamed(id: string): FixturePack {
   const pack = fixturePacks[id];
   if (!pack) {
@@ -494,8 +593,18 @@ function simulatedStatus(
 
 // one field error per required input field, as if each had been rejected
 function simulatedValidation(pattern: string): EngineResponse {
-  const name = pattern.split("/")[2] as ResourceName;
-  const shape = writeRules[name].input.shape;
+  const name = pattern.split("/")[2] ?? "";
+  // a utility such as the echo has no input fields, so its whole body is rejected
+  if (!Object.hasOwn(writeRules, name)) {
+    return problem(422, "validation_failed", "The request body has invalid fields.", [
+      {
+        field: "",
+        code: "simulated",
+        message: "The body was rejected by the validation-error scenario.",
+      },
+    ]);
+  }
+  const shape = writeRules[name as ResourceName].input.shape;
   const required = Object.keys(shape).filter((field) => !shape[field]?.isOptional());
   return problem(
     422,
@@ -664,6 +773,7 @@ const paramFormats: Record<string, RegExp> = {
   // any plain number is a size, so the range check can answer 400 instead of 404
   size: /^(?:0|[1-9]\d*)(?:x(?:0|[1-9]\d*))?$/,
   name: /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
+  code: /^[0-9]{3}$/,
 };
 
 // an SVG opened directly is a document on the API's origin, so it may not load or run anything
@@ -707,7 +817,9 @@ function readSequences(
   sequences: Readonly<Record<string, readonly number[]>>,
   routes: readonly Route[],
 ): Map<string, SequenceStatus[]> {
-  const keys = routes.map((candidate) => `${candidate.method} ${candidate.pattern}`);
+  const keys = routes
+    .filter((candidate) => !candidate.diagnostic)
+    .map((candidate) => `${candidate.method} ${candidate.pattern}`);
   const plan = new Map<string, SequenceStatus[]>();
 
   for (const [key, steps] of Object.entries(sequences)) {

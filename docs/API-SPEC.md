@@ -1,6 +1,6 @@
 # API spec: M1 surface
 
-Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 to 5 implement the resources, the REST routes, the write rules, the query parameters, the list responses, the simulation controls and the images below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
+Planning document, 2026-10-15. This is the concrete M1 contract proposed for M0 review, restored from section 4 of the [original draft](old/API-tool-for-front-end-developers-PLAN.md) and made consistent with [PROJECT-PLAN.md](PROJECT-PLAN.md). M1a steps 1 to 6 implement the resources, the REST routes, the write rules, the query parameters, the list responses, the simulation controls, the images, the discovery and utility endpoints and CORS below; the other sections are still proposals. Precedence, cursor binding, caching and security rules live in the plan and in [TECHNICAL-DECISIONS.md](TECHNICAL-DECISIONS.md); this document shows what a developer sees. Field names, recipe names and flags are proposals. Two syntax questions, pagination mode selection and the control prefix, are open M0 decisions in the plan, section 15.
 
 `api.loadstate.example` is a placeholder until the name and domain are chosen.
 
@@ -205,7 +205,7 @@ Single records are bare objects. Errors use RFC 9457 Problem Details with a stab
 }
 ```
 
-Every list response carries `Link` with `first`, `prev` and `next` where they apply and, outside cursor mode, `last`. A link keeps the request's other parameters, query controls such as `_mock.fixture` included, and uses the deployment's trusted base URL: the configured `publicUrl` or the listening origin on Node, the routed hostname on Workers, the MSW `baseUrl`, and a root-relative path in-process. Planned response headers: `ETag` (with 304 on `If-None-Match` for cacheable fixtures), `Retry-After` on 429 and 503, `X-Mock-State` (`stateless` or `memory`), and `X-Mock-Applied` listing the controls and recipe that shaped the response. All of these are listed in `Access-Control-Expose-Headers`. Anonymous public reads allow any origin without credentials. Simulated failures, delays and stateful responses are `no-store`; normal fixtures and images opt into caching.
+Every list response carries `Link` with `first`, `prev` and `next` where they apply and, outside cursor mode, `last`. A link keeps the request's other parameters, query controls such as `_mock.fixture` included, and uses the deployment's trusted base URL: the configured `publicUrl` or the listening origin on Node, the routed hostname on Workers, the MSW `baseUrl`, and a root-relative path in-process. Planned response headers: `ETag` (with 304 on `If-None-Match` for cacheable fixtures), `Retry-After` on 429 and 503, `X-Mock-State` (`stateless` or `memory`), and `X-Mock-Applied` listing the controls and recipe that shaped the response. `Link`, `Location`, `Retry-After`, `Allow`, `X-Mock-State` and `X-Mock-Applied` are listed in `Access-Control-Expose-Headers`, and anonymous reads allow any origin without credentials (see CORS below). Simulated failures, delays and stateful responses are `no-store`; normal fixtures and images opt into caching.
 
 ## Simulation controls
 
@@ -218,7 +218,7 @@ The host limit applies first. Explicit request controls then win over recipe def
 | `_mock.delay` | `X-Mock-Delay` | 0 to the host limit, 10 000 ms by default | Wait before sending headers. The engine returns the delay as an effect, and the Node server, the Worker and the MSW handlers wait. A larger value is 400 `limit_exceeded` |
 | `_mock.status` | `X-Mock-Status` | 204, 400, 401, 403, 404, 408, 409, 410, 413, 415, 422, 429, 500, 501, 502, 503, 504 | Answer with this status before the route runs, so a write changes nothing. Errors carry Problem Details with code `simulated_status`; 204 has no body; 429 sends `Retry-After: 5` and 503 `Retry-After: 60` |
 | `_mock.scenario` | `X-Mock-Scenario` | a recipe below | Run the recipe |
-| `_mock.body` | `X-Mock-Body` | `malformed-json`, `empty`, `html`, `wrong-content-type` | Replace the final body: the first half of the JSON text, no bytes, an HTML error page as `text/html`, or the normal JSON as `text/plain`. 400 with HEAD, DELETE or a simulated 204 |
+| `_mock.body` | `X-Mock-Body` | `malformed-json`, `empty`, `html`, `wrong-content-type` | Replace the final body: the first half of the JSON text, no bytes, an HTML error page as `text/html`, or the normal JSON as `text/plain`. 400 with HEAD, DELETE, a simulated 204 or a route that answers 204, such as the 204 status fixture |
 | `_mock.step` | `X-Mock-Step` | 1 to 3 | The step of `retry-then-ok`; 400 with any other scenario |
 | `_mock.failRate` | `X-Mock-Fail-Rate` | 0 to 1 | Exploratory: answer 500 with this probability; never the mechanism for automated tests |
 | `_mock.fixture` | `X-Mock-Fixture` | `core@1`, `edge@1` | The pack a stateless engine reads for this request. A memory engine keeps the pack it was created with and answers 409 `fixture_locked` to any other |
@@ -235,7 +235,7 @@ The host limit applies first. Explicit request controls then win over recipe def
 | `ratelimited` | 429 with `Retry-After: 5` |
 | `maintenance` | 503 with `Retry-After: 60` |
 | `timeout` | Waits the host limit, then 504; a gateway error, not a client timeout |
-| `validation-error` | POST, PUT and PATCH answer 422 with one `simulated` field error per required input field, before the route runs; other methods are unaffected |
+| `validation-error` | POST, PUT and PATCH answer 422 with one `simulated` field error per required input field, before the route runs; on the echo, which has no input fields, one error with an empty `field` rejects the whole body. Other methods are unaffected |
 | `retry-then-ok` | `_mock.step=1` and `2` answer 503 with `Retry-After: 1`, step 3 the normal response; a missing step is 400. Automatic per-run sequences arrive in M1b |
 | `flaky` | Exploratory: a 200 to 800 ms delay and a 30 % chance of 500; not for automated tests |
 
@@ -269,14 +269,27 @@ The SVG has no script, event handler, `foreignObject`, link or external referenc
 
 ## Utility and discovery endpoints (M1a)
 
-| Endpoint | Purpose |
+| Endpoint | Result |
 |---|---|
-| `GET /v1` | Resource catalog with fixture-pack version and counts |
-| `GET /capabilities` | API and fixture versions, supported scenarios and controls, adapter limits, current mode |
-| `ANY /v1/_utils/echo` | Method, normalized query, allowlisted headers and bounded parsed JSON body; credentials and cookies redacted |
-| `GET /v1/_utils/status/:code` | Supported status fixtures with protocol-correct headers and body rules |
-| `GET /healthz`, `GET /readyz` | Liveness and readiness outside the simulation engine |
-| `GET /openapi.json`, `GET /docs` | Generated contract and interactive reference |
+| `GET /v1` | The catalog: the selected pack's id, reference time and checksum; each resource with its absolute URL, live count, relations, expansions, search fields, filters and sortable fields; links to `/capabilities`, `/openapi.json` and `/docs` |
+| `GET /capabilities` | The engine's state, the API and OpenAPI versions, the packs and their counts, every control with its query and header names and its accepted values (a list, or a range whose delay maximum is this host's limit), the statuses, scenarios and body faults, the limits, the pagination modes and the image routes; `no-store` |
+| `GET, HEAD, POST, PUT, PATCH, DELETE /v1/_utils/echo` | The method, path, query without controls (each name with its values), allowlisted headers, the names of credential headers present, and the body: parsed JSON for `application/json` (malformed is 400), otherwise up to 4 096 characters of text with a truncation flag, plus the number of bytes received before decoding |
+| `GET /v1/_utils/status/:code` | 200, 201, 202, 204, 400, 401, 403, 404, 405, 408, 409, 410, 413, 415, 422, 429, 500, 501, 502, 503 or 504 with the headers its definition requires: `Location` on 201, no body on 204, `WWW-Authenticate` on 401, `Allow` on 405, `Retry-After` on 429 and 503; always `no-store`. Another three-digit code is 400 listing these |
+| `GET /healthz`, `GET /readyz` | Liveness and readiness, outside the engine |
+| `GET /openapi.json`, `GET /openapi-3.2.json` | The generated contract as OpenAPI 3.1.2 and 3.2.1; cached for 5 minutes |
+| `GET /docs` | An interactive reference built on Scalar 1.72.4, loaded from jsDelivr with Subresource Integrity |
+
+The echo never shows the values of `Authorization`, `Proxy-Authorization`, `Cookie` or `X-Api-Key`; it lists their names under `redacted`. It echoes only `Accept`, `Accept-Language`, `Cache-Control`, `Content-Length`, `Content-Type`, `If-Match`, `If-Modified-Since`, `If-None-Match`, `Origin`, `Referer`, `User-Agent`, `X-Correlation-Id` and `X-Request-Id`, each cut to 512 characters.
+
+`/capabilities`, the two documents and `/docs` are diagnostic reads: the controls, the `X-Mock-*` headers and the engine's sequences never apply, any query parameter is 400, and a sequence cannot be configured for them. `/v1` and the utilities take the controls like every other `/v1` route.
+
+The served documents are generated at development time and committed (`pnpm --filter @loadstate/core openapi:generate`); a test fails when they drift from the generator, so no request pays the generation cost. The docs page has no inline script, and its `Content-Security-Policy` allows only the pinned script and requests to its own origin.
+
+### CORS
+
+Every response of the Node server, the Worker and the MSW handlers, including health checks, errors and 413, carries `Access-Control-Allow-Origin: *` and `Access-Control-Expose-Headers: Link, Location, Retry-After, Allow, X-Mock-State, X-Mock-Applied`. Credentials are never allowed. A server created with an origin list answers only those exact origins and adds `Vary: Origin`. Each entry is a bare origin as browsers send it, such as `https://app.test` or `http://[::1]:3000`, with no default port (`:80` on http, `:443` on https) and no leading zeros; any other entry fails at startup.
+
+A preflight, an OPTIONS request with `Origin` and `Access-Control-Request-Method`, answers 204 before the engine runs, so it never runs a control or advances a sequence. It allows `GET, HEAD, POST, PUT, PATCH, DELETE`, the headers `Accept`, `Accept-Language`, `Authorization`, `Content-Type`, `If-Match`, `If-None-Match`, `X-Request-Id` and every `X-Mock-*` control header, and a max age of 600 seconds. An OPTIONS request without those headers is 405. The in-process engine adds no CORS headers; they are a transport concern.
 
 ## CLI
 

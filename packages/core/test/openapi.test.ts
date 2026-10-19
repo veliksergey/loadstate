@@ -140,6 +140,10 @@ describe("generated OpenAPI document", () => {
       "OffsetMeta",
       "PageNumberMeta",
       "CursorMeta",
+      "Catalog",
+      "Capabilities",
+      "Echo",
+      "StatusFixture",
       ...resources.flatMap((resource) => [
         resource.singular,
         `${resource.singular}Page`,
@@ -219,6 +223,13 @@ describe("generated OpenAPI document", () => {
       ]),
       "GET /img/{size}",
       "GET /img/avatar/{name}",
+      "GET /v1",
+      ...["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => `${method} /v1/_utils/echo`),
+      "GET /v1/_utils/status/{code}",
+      "GET /capabilities",
+      "GET /openapi.json",
+      "GET /openapi-3.2.json",
+      "GET /docs",
     ];
     expect(documented.sort()).toEqual(expected.sort());
   });
@@ -255,6 +266,20 @@ describe("generated OpenAPI document", () => {
         "Cache-Control": expect.any(Object),
       },
     });
+  });
+
+  it("documents the HTTP server's 413 on echo writes, without engine headers", () => {
+    const paths = load("3.1.2").paths;
+    const echo = paths["/v1/_utils/echo"];
+    const adapter413 = paths["/v1/users"]?.post?.responses["413"];
+    expect(adapter413).not.toHaveProperty("headers");
+    // every echo method but GET reads a body
+    for (const method of ["post", "put", "patch", "delete"]) {
+      expect([method, echo?.[method]?.responses["413"]]).toEqual([method, adapter413]);
+      expect([method, echo?.[method]?.requestBody?.required]).toEqual([method, false]);
+    }
+    expect(Object.keys(echo?.get?.responses ?? {})).not.toContain("413");
+    expect(echo?.get?.requestBody).toBeUndefined();
   });
 
   it.each(resources)("documents exactly the query parameters $name accepts", (resource) => {
@@ -316,8 +341,14 @@ describe("generated OpenAPI document", () => {
         const used = (operation.parameters ?? []).flatMap((p) =>
           "$ref" in p ? [(p as { $ref: string }).$ref] : [],
         );
-        expect([path, method, used.sort()]).toEqual([path, method, [...refs].sort()]);
-        expect(operation.responses["204"], `${method} ${path}`).toBeDefined();
+        // diagnostic reads are never simulated, so they take no controls
+        const isDiagnostic = !path.startsWith("/v1") && !path.startsWith("/img");
+        expect([path, method, used.sort()]).toEqual([
+          path,
+          method,
+          isDiagnostic ? [] : [...refs].sort(),
+        ]);
+        expect(operation.responses["204"] !== undefined, `${method} ${path}`).toBe(!isDiagnostic);
       }
     }
   });
@@ -576,6 +607,56 @@ describe("engine responses against the document", () => {
       400,
     ],
     ["an avatar name that is not one", "/img/avatar/{name}", "get", get("/img/avatar/-x"), 404],
+    ["the catalog", "/v1", "get", get("/v1"), 200],
+    ["the capabilities", "/capabilities", "get", get("/capabilities"), 200],
+    ["a query on a diagnostic route", "/capabilities", "get", get("/capabilities", "x=1"), 400],
+    ["the OpenAPI document", "/openapi.json", "get", get("/openapi.json"), 200],
+    ["the OpenAPI 3.2 document", "/openapi-3.2.json", "get", get("/openapi-3.2.json"), 200],
+    ["the docs page", "/docs", "get", get("/docs"), 200],
+    ["an echo", "/v1/_utils/echo", "get", get("/v1/_utils/echo", "a=1"), 200],
+    [
+      "an echoed JSON body",
+      "/v1/_utils/echo",
+      "post",
+      send("POST", "/v1/_utils/echo", { hello: "world" }),
+      200,
+    ],
+    ["a malformed echo body", "/v1/_utils/echo", "put", send("PUT", "/v1/_utils/echo", "{"), 400],
+    ["the 201 fixture", "/v1/_utils/status/{code}", "get", get("/v1/_utils/status/201"), 201],
+    ["the 204 fixture", "/v1/_utils/status/{code}", "get", get("/v1/_utils/status/204"), 204],
+    ["the 401 fixture", "/v1/_utils/status/{code}", "get", get("/v1/_utils/status/401"), 401],
+    ["the 503 fixture", "/v1/_utils/status/{code}", "get", get("/v1/_utils/status/503"), 503],
+    [
+      "an echoed DELETE body",
+      "/v1/_utils/echo",
+      "delete",
+      send("DELETE", "/v1/_utils/echo", { reason: "cleanup" }),
+      200,
+    ],
+    [
+      "a validation-error echo",
+      "/v1/_utils/echo",
+      "patch",
+      {
+        ...send("PATCH", "/v1/_utils/echo", {}),
+        query: new URLSearchParams("_mock.scenario=validation-error"),
+      },
+      422,
+    ],
+    [
+      "a body fault on the 204 fixture",
+      "/v1/_utils/status/{code}",
+      "get",
+      get("/v1/_utils/status/204", "_mock.body=html"),
+      400,
+    ],
+    [
+      "a status without a fixture",
+      "/v1/_utils/status/{code}",
+      "get",
+      get("/v1/_utils/status/418"),
+      400,
+    ],
   ];
 
   it.each(cases)(
@@ -609,8 +690,12 @@ describe("engine responses against the document", () => {
       expect(Object.keys(documented.content)).toContain(mediaType);
 
       const schema = `${urls.get("3.1.2")}#/${pointer("paths", path, method, "responses", code, "content", mediaType, "schema")}`;
-      // an image's body is its SVG text, which the document describes as a string
-      expect(await isValid(schema, response.rawBody ?? response.body)).toBe(true);
+      // an image's body is its SVG text; a served document is JSON text
+      const payload =
+        response.rawBody !== undefined && mediaType === "application/json"
+          ? JSON.parse(response.rawBody)
+          : (response.rawBody ?? response.body);
+      expect(await isValid(schema, payload)).toBe(true);
     },
   );
 

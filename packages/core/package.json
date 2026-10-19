@@ -24,7 +24,8 @@
   "scripts": {
     "build": "node ../../scripts/clean.mjs dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
-    "fixtures:generate": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/generate-fixtures.ts"
+    "fixtures:generate": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/generate-fixtures.ts",
+    "openapi:generate": "pnpm run build && node scripts/generate-openapi.mjs"
   },
   "dependencies": {
     "zod": "4.6.7"

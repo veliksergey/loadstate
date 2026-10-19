@@ -47,7 +47,32 @@ export {
   scenarioNames,
   simulatedStatuses,
 } from "./controls.js";
+export {
+  type CorsPolicy,
+  checkCorsPolicy,
+  corsAllowedHeaders,
+  corsExposedHeaders,
+  corsHeaders,
+  corsMaxAgeSeconds,
+  corsMethods,
+  defaultCorsPolicy,
+  isPreflight,
+  preflight,
+  withCors,
+} from "./cors.js";
 export { decodeCursor, encodeCursor, maxCursorLength } from "./cursor.js";
+export {
+  type Capabilities,
+  type Catalog,
+  capabilitiesSchema,
+  catalogSchema,
+  type Echo,
+  echoSchema,
+  redactedHeaders,
+  scalarVersion,
+  statusFixtureSchema,
+  statusFixtures,
+} from "./discovery.js";
 export {
   createEngine,
   type Engine,
