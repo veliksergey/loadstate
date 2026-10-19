@@ -8,12 +8,12 @@ Claude Code implements. Codex reviews read-only. The user decides and commits.
 
 ## Project
 
-Loadstate is a fake REST API and scenario toolkit for front-end development and testing. The plan and contracts live in `docs/`: start with `docs/PROJECT-PLAN.md`, then `docs/API-SPEC.md` and `docs/TECHNICAL-DECISIONS.md`. Current milestone: M1a.
+Loadstate is a fake REST API and scenario toolkit for front-end development and testing. The plan and contracts live in `docs/`: start with `docs/PROJECT-PLAN.md`, then `docs/API-SPEC.md` and `docs/TECHNICAL-DECISIONS.md`. Current milestone: M1a, steps 1 to 6 of 10 done; progress, next steps and open items are in `docs/STATUS.md`.
 
 | Path | Contents |
 |---|---|
 | `packages/core` | Zod contracts (`src/contracts.ts`), the resource registry with each resource's relations and query rules (`src/resources.ts`), the generated fixture packs `core@1` and `edge@1` (`src/fixtures/`), the simulation controls and recipes (`src/controls.ts`), the SVG images and avatars (`src/images.ts`), the query parser (`src/query.ts`) and list pipeline (`src/list.ts`: search, filters, sort, pagination, cursors, links), write rules (`src/writes.ts`), Problem Details, the engine (`createEngine`) that routes and answers every `/v1` request, and the OpenAPI generator (`createOpenApiDocument`). Portable: no Node, DOM or Workers APIs. Its fixture generator lives in `scripts/` and runs only at development time. |
-| `packages/server` | Hono adapter (`createApp`): health routes, the request body limit, and catch-alls that hand `/v1/*` and `/img/*` to an engine. Node entry (`node.ts`, executable `main.ts`) and Workers entry (`worker.ts`). |
+| `packages/server` | Hono adapter (`createApp`): health routes, the request body limit, CORS, and catch-alls that hand `/v1`, `/img/*` and the discovery routes to an engine. Node entry (`node.ts`, executable `main.ts`) and Workers entry (`worker.ts`). |
 | `packages/msw` | MSW 3 adapter (`createHandlers`) that forwards requests under a base URL to an engine. Portable: builds without Node types. |
 
 Toolchain: Node `>=22.13.0` (24 is the reference), pnpm 12.11.2 through `packageManager`, TypeScript 6.0.3 with `strict`, Biome 2.5.15 for lint and format, Vitest 5. Use pnpm for every package command, including registry lookups.

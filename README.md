@@ -77,6 +77,7 @@ The packages are private until the first release.
 
 ## Documentation
 
+- [Status and handoff](docs/STATUS.md)
 - [Project plan](docs/PROJECT-PLAN.md)
 - [API spec](docs/API-SPEC.md)
 - [Technical decisions](docs/TECHNICAL-DECISIONS.md)
